@@ -8,20 +8,33 @@ Extended Kalman Filter class by Sam Tabor, 2013.
 #pragma once
 
 #include <AP_Math/matrixN.h>
+#include "Filter/Kalman.h"
+
+#include <array>
+#include <cstddef>
+#include <tuple>
 
 class ExtendedKalmanFilter {
 public:
-    ExtendedKalmanFilter(void) {}
-
     static constexpr const uint8_t N = 4;
 
-    VectorN<float,N> X;
-    MatrixN<float,N> P;
-    MatrixN<float,N> Q;
-    float R;
-    void reset(const VectorN<float,N> &x, const MatrixN<float,N> &p, const MatrixN<float,N> q, float r);
+    ExtendedKalmanFilter();
+
+    void reset(const VectorN<float,N> &x, const std::array<float,N> &p, const std::array<float,N> &q, float r);
     void update(float z, float Px, float Py, float driftX, float driftY);
 
+    float operator[](std::size_t position);
+
 private:
-    float measurementpredandjacobian(VectorN<float,N> &A, float Px, float Py);
+    // Extended Kalman filter: working on float data types, four estimated
+    // states (thermal velocity, thermal radius, thermal center North sUAV
+    // offset, and thermal center East sUAV offset), one observed output
+    // (vertical air velocity variometer), no control input, two additional
+    // update arguments (positions), and two additional prediction arguments
+    // (wind drift North sUAV offset and wind drift East sUAV offset).
+    using Ekf =
+        Kalman<float, 4, 1, 0, std::tuple<float, float>,
+                               std::tuple<float, float>>;
+
+    Ekf _ekf;
 };
