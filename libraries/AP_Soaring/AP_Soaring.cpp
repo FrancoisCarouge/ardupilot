@@ -1,7 +1,10 @@
 #include "AP_Soaring.h"
 #include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS.h>
+
+#include <array>
 #include <stdint.h>
+
 extern const AP_HAL::HAL& hal;
 
 #if HAL_SOARING_ENABLED
@@ -255,19 +258,16 @@ void SoaringController::init_thermalling()
     float cov_q1 = powf(thermal_q1, 2); // Process noise for strength
     float cov_q2 = powf(thermal_q2, 2); // Process noise for position and radius
 
-    const float init_q[4] = {cov_q1,
-                             cov_q2,
-                             cov_q2,
-                             cov_q2};
+    const std::array<float, 4> init_q{cov_q1,
+                                      cov_q2,
+                                      cov_q2,
+                                      cov_q2};
 
-    const MatrixN<float,4> q{init_q};
 
-    const float init_p[4] = {INITIAL_STRENGTH_COVARIANCE,
-                             INITIAL_RADIUS_COVARIANCE,
-                             INITIAL_POSITION_COVARIANCE,
-                             INITIAL_POSITION_COVARIANCE};
-
-    const MatrixN<float,4> p{init_p};
+    const std::array<float, 4> init_p{INITIAL_STRENGTH_COVARIANCE,
+                                      INITIAL_RADIUS_COVARIANCE,
+                                      INITIAL_POSITION_COVARIANCE,
+                                      INITIAL_POSITION_COVARIANCE};
 
     Vector3f position;
 
@@ -285,7 +285,7 @@ void SoaringController::init_thermalling()
     const VectorN<float,4> xr{init_xr};
 
     // Also reset covariance matrix p so filter is not affected by previous data
-    _ekf.reset(xr, p, q, r);
+    _ekf.reset(xr, init_p, init_q, r);
 
     _prev_update_time = AP_HAL::micros64();
     _thermal_start_time_us = AP_HAL::micros64();
@@ -293,8 +293,8 @@ void SoaringController::init_thermalling()
 
     _vario.reset_climb_filter(0.0);
 
-    _position_x_filter.reset(_ekf.X[2]);
-    _position_y_filter.reset(_ekf.X[3]);
+    _position_x_filter.reset(_ekf[2]);
+    _position_y_filter.reset(_ekf[3]);
 
     _exit_commanded = false;
 }
@@ -319,13 +319,13 @@ void SoaringController::update_thermalling()
         return;
     }
 
-    Vector3f wind_drift = _ahrs.wind_estimate()*deltaT*_vario.get_filtered_climb()/_ekf.X[0];
+    Vector3f wind_drift = _ahrs.wind_estimate()*deltaT*_vario.get_filtered_climb()/_ekf[0];
 
     // update the filter
     _ekf.update(_vario.reading, current_position.x, current_position.y, wind_drift.x, wind_drift.y);
 
     
-    _thermalability = (_ekf.X[0]*expf(-powf(get_thermalling_radius()/_ekf.X[1], 2))) - _vario.get_exp_thermalling_sink();
+    _thermalability = (_ekf[0]*expf(-powf(get_thermalling_radius()/_ekf[1], 2))) - _vario.get_exp_thermalling_sink();
 
     _prev_update_time = AP_HAL::micros64();
 
@@ -333,8 +333,8 @@ void SoaringController::update_thermalling()
     _position_x_filter.set_cutoff_frequency(1/(3*_vario.tau));
     _position_y_filter.set_cutoff_frequency(1/(3*_vario.tau));
 
-    _position_x_filter.apply(_ekf.X[2], deltaT);
-    _position_y_filter.apply(_ekf.X[3], deltaT);
+    _position_x_filter.apply(_ekf[2], deltaT);
+    _position_y_filter.apply(_ekf[3], deltaT);
 
     // write log - save the data.
     // @LoggerMessage: SOAR
@@ -356,10 +356,10 @@ void SoaringController::update_thermalling()
     AP::logger().WriteStreaming("SOAR", "TimeUS,nettorate,x0,x1,x2,x3,north,east,alt,dx_w,dy_w,th", "Qfffffffffff",
                                            AP_HAL::micros64(),
                                            (double)_vario.reading,
-                                           (double)_ekf.X[0],
-                                           (double)_ekf.X[1],
-                                           (double)_ekf.X[2],
-                                           (double)_ekf.X[3],
+                                           (double)_ekf[0],
+                                           (double)_ekf[1],
+                                           (double)_ekf[2],
+                                           (double)_ekf[3],
                                            current_position.x,
                                            current_position.y,
                                            (double)_vario.alt,
@@ -469,7 +469,7 @@ bool SoaringController::check_drift(Vector2f prev_wp, Vector2f next_wp)
     }
 
     // Check against the estimated thermal.
-    Vector2f position(_ekf.X[2], _ekf.X[3]);
+    Vector2f position(_ekf[2], _ekf[3]);
 
     Vector2f start_pos(_thermal_start_pos.x, _thermal_start_pos.y);
 

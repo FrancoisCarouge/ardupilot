@@ -1,11 +1,16 @@
 #pragma once
 
+#include "Filter/Kalman.h"
+
+#include <tuple>
+
 /*
 * This class implements a simple 1-D Extended Kalman Filter to estimate the Relative body frame postion of the lading target and its relative velocity
 * position and velocity of the target is predicted using delta velocity
 * The predictions are corrected periodically using the landing target sensor(or camera)
 */
-class PosVelEKF {
+class PosVelEKF
+{
 public:
     // Initialize the covariance and state matrix
     // This is called when the landing target is located for the first time or it was lost, then relocated
@@ -20,27 +25,28 @@ public:
     void fusePos(float pos, float posVar);
 
     // Get the EKF state position
-    float getPos() const { return _state[0]; }
+    float getPos() const
+    {
+        return _ekf.x()(0);
+    }
 
     // Get the EKF state velocity
-    float getVel() const { return _state[1]; }
+    float getVel() const
+    {
+        return _ekf.x()(1);
+    }
 
     // get the normalized innovation squared
     float getPosNIS(float pos, float posVar);
 
 private:
-    // stored covariance and state matrix
+    // Extended Kalman filter: working on float data types, two estimated states
+    // (position and velocity), two observed outputs (position and velocity
+    // delta), one control input (velocity delta), one additional update
+    // argument (position uncertainty), and two additional prediction arguments
+    // (time delta and velocity noise).
+    using Ekf =
+        Kalman<float, 2, 2, 1, std::tuple<float>, std::tuple<float, float>>;
 
-    /*
-    _state[0] = position
-    _state[1] = velocity
-    */
-    float _state[2];
-
-    /*
-    Covariance Matrix is ALWAYS symmetric, therefore the following matrix is assumed:
-    P = Covariance Matrix = |_cov[0]  _cov[1]|
-                            |_cov[1]  _cov[2]|
-    */
-    float _cov[3];
+    Ekf _ekf;
 };

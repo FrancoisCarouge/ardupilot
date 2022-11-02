@@ -516,6 +516,9 @@ def configure(cfg):
 
     cfg.env.prepend_value('INCLUDES', [
         cfg.srcnode.abspath() + '/libraries/',
+        '/usr/local/include/eigen3',
+        '/home/dev/cpp/kalman/kalman/include',
+        '/home/dev/cpp/kalman/kalman/support/include/fcarouge'
     ])
 
     cfg.find_program('rsync', mandatory=False)
