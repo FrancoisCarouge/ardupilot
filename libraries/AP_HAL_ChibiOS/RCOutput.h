@@ -115,6 +115,7 @@ public:
     /*
       timer push (for oneshot min rate)
      */
+    using AP_HAL::RCOutput::timer_tick;
     void timer_tick(rcout_timer_t cycle_start_us, rcout_timer_t timeout_period_us);
 
     /*
@@ -289,6 +290,8 @@ public:
       trigger send of serial LED data
      */
     bool serial_led_send(const uint16_t chan) override;
+#else
+    using AP_HAL::RCOutput::serial_led_send;
 #endif
     /*
       rcout thread
