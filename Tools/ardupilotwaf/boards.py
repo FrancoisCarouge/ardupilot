@@ -347,6 +347,13 @@ class Board:
 
         cfg.msg("CXX Compiler", "%s %s"  % (cfg.env.COMPILER_CXX, ".".join(cfg.env.CC_VERSION)))
 
+        # C++26 requires at least g++ 14 or clang 19
+        if 'clang' in cfg.env.COMPILER_CXX:
+            if not self.cc_version_gte(cfg, 19, 0):
+                cfg.fatal("C++26 build requires clang version 19 or later, found %s" % '.'.join(cfg.env.CC_VERSION))
+        elif not self.cc_version_gte(cfg, 14, 0):
+            cfg.fatal("C++26 build requires g++ version 14 or later, found %s" % '.'.join(cfg.env.CC_VERSION))
+
         if cfg.options.assert_cc_version:
             cfg.msg("Checking compiler", "%s %s"  % (cfg.options.assert_cc_version, ".".join(cfg.env.CC_VERSION)))
             have_version = cfg.env.COMPILER_CXX+"-"+'.'.join(list(cfg.env.CC_VERSION))
@@ -402,7 +409,7 @@ class Board:
             env.PRIVATE_KEY = cfg.options.private_key
             
         env.CXXFLAGS += [
-            '-std=gnu++11',
+            '-std=gnu++26',
 
             '-fdata-sections',
             '-ffunction-sections',
@@ -1266,7 +1273,7 @@ class chibios(Board):
             '-L%s' % env.BUILDROOT,
             '-L%s' % cfg.srcnode.make_node('modules/ChibiOS/os/common/startup/ARMCMx/compilers/GCC/ld/').abspath(),
             '-L%s' % cfg.srcnode.make_node('libraries/AP_HAL_ChibiOS/hwdef/common/').abspath(),
-            '-Wl,-Map,Linker.map,%s--cref,--gc-sections,--no-warn-mismatch,--library-path=/ld,--script=ldscript.ld,--defsym=__process_stack_size__=%s,--defsym=__main_stack_size__=%s' % ("--print-memory-usage," if cfg.env.EXT_FLASH_SIZE_MB > 0 and cfg.env.INT_FLASH_PRIMARY == 0 else "", cfg.env.PROCESS_STACK, cfg.env.MAIN_STACK)
+            '-Wl,-Map,Linker.map,%s--cref,--gc-sections,--no-warn-mismatch,--no-warn-rwx-segments,--library-path=/ld,--script=ldscript.ld,--defsym=__process_stack_size__=%s,--defsym=__main_stack_size__=%s' % ("--print-memory-usage," if cfg.env.EXT_FLASH_SIZE_MB > 0 and cfg.env.INT_FLASH_PRIMARY == 0 else "", cfg.env.PROCESS_STACK, cfg.env.MAIN_STACK)
         ]
 
         if cfg.env.DEBUG:
@@ -1280,9 +1287,9 @@ class chibios(Board):
             ]
 
         if cfg.env.COMPILER_CXX == "g++":
-            if not self.cc_version_gte(cfg, 10, 2):
-                # require at least 10.2 compiler
-                cfg.fatal("ChibiOS build requires g++ version 10.2.1 or later, found %s" % '.'.join(cfg.env.CC_VERSION))
+            if not self.cc_version_gte(cfg, 14, 0):
+                # require at least 14.0 compiler for C++26
+                cfg.fatal("ChibiOS build requires g++ version 14 or later, found %s" % '.'.join(cfg.env.CC_VERSION))
             
         if cfg.env.ENABLE_ASSERTS:
             cfg.msg("Enabling ChibiOS asserts", "yes")
@@ -1348,6 +1355,7 @@ class chibios(Board):
             ('10','2','1'),
             ('11','3','0'),
             ('11','4','0'),
+            ('15','2','1'),
         ])
 
         if cfg.env.HAL_CANFD_SUPPORTED:
