@@ -217,6 +217,14 @@ fi
 
 # Lists of packages to install
 BASE_PKGS="build-essential ccache g++ gawk git make wget valgrind screen python3-pexpect astyle"
+
+# C++26 needs g++ 14 or later; waf picks g++-14 when the default g++ is older
+if [ ${RELEASE_CODENAME} == 'noble' ]; then
+    BASE_PKGS+=" gcc-14 g++-14"
+elif [ ${RELEASE_CODENAME} == 'jammy' ] ||
+     [ ${RELEASE_CODENAME} == 'bookworm' ]; then
+    echo "WARNING: ${RELEASE_CODENAME} does not provide g++ 14 or later, SITL builds require it"
+fi
 PYTHON_PKGS="lxml pymavlink pyserial MAVProxy geocoder empy==3.3.4 ptyprocess dronecan"
 PYTHON_PKGS="$PYTHON_PKGS flake8 junitparser wsproto tabulate"
 
