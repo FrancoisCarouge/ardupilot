@@ -139,12 +139,15 @@ jobs:
         toolchain: [
             chibios,
         ]
-        gcc: [10]
+        gcc: [15]
     steps:
       # git checkout the PR
       - uses: actions/checkout@v7
         with:
           submodules: 'recursive'
+      - uses: ./.github/actions/setup-cxx26
+        with:
+          arm: 'true'
       - name: ccache test
         shell: bash
         run: |

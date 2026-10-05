@@ -209,6 +209,10 @@ jobs:
           submodules: 'recursive'
           persist-credentials: false
 
+      - uses: ./.github/actions/setup-cxx26
+        with:
+          arm: ${{ matrix.toolchain == 'chibios' }}
+          cross: ${{ matrix.toolchain == 'armhf' && 'arm-linux-gnueabihf' || '' }}
       - uses: ./.github/actions/setup-ccache
         with:
           key-suffix: ${{ matrix.toolchain }}-${{ matrix.config }}
