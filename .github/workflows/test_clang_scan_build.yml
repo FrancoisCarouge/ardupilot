@@ -153,6 +153,9 @@ jobs:
         with:
           submodules: 'recursive'
           persist-credentials: false
+      - uses: ./.github/actions/setup-cxx26
+        with:
+          clang: 'true'
       - uses: ./.github/actions/setup-ccache
         with:
           key-suffix: base
@@ -169,12 +172,13 @@ jobs:
         shell: bash
         run: |
           git config --global --add safe.directory ${GITHUB_WORKSPACE}
-          # use whatever scan-build the container's distribution provides.
-          # scan_build_suppressions.py records an issue hash per clang major
-          # version, and process_scan_build_output.py reads the version out
-          # of the reports, so the analyser version is not pinned here.
+          # C++26 needs clang 19 or later; match the clang installed by
+          # setup-cxx26. scan_build_suppressions.py records an issue hash per
+          # clang major version, and process_scan_build_output.py reads the
+          # version out of the reports.
           sudo apt update
-          sudo apt-get -y install clang-tools
+          sudo apt-get -y install clang-tools-19
+          sudo ln -sf /usr/bin/scan-build-19 /usr/bin/scan-build
           export PATH="/github/home/.local/bin:$PATH"
           mkdir -p "$GITHUB_WORKSPACE/tmp"
           CI_BUILD_TARGET="clang_scan_build" Tools/scripts/build_ci.sh  >$HOME/scan-build-stdout.txt
