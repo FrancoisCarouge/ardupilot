@@ -28,12 +28,12 @@ PX4_PKGS="lib32-glibc zip zlib ncurses"
 
 PYTHON_PKGS="lxml pymavlink MAVProxy pexpect argparse matplotlib pyparsing geocoder pyserial empy==3.3.4 dronecan packaging setuptools wheel"
 
-# GNU Tools for ARM Embedded Processors
-# (see https://launchpad.net/gcc-arm-embedded/)
-ARM_ROOT="gcc-arm-none-eabi-10-2020-q4-major"
-ARM_TARBALL="$ARM_ROOT-x86_64-linux.tar.bz2"
-ARM_TARBALL_URL="https://firmware.ardupilot.org/Tools/STM32-tools/$ARM_TARBALL"
-ARM_TARBALL_CHECKSUM="21134caa478bbf5352e239fbc6e2da3038f8d2207e089efc96c3b55f1edcd618" 
+# Arm GNU Toolchain for Arm Embedded Processors
+# (see https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)
+ARM_ROOT="arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi"
+ARM_TARBALL="$ARM_ROOT.tar.xz"
+ARM_TARBALL_URL="https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/$ARM_TARBALL"
+ARM_TARBALL_CHECKSUM="597893282ac8c6ab1a4073977f2362990184599643b4c5ee34870a8215783a16"
 
 # Ardupilot Tools
 ARDUPILOT_TOOLS="ardupilot/Tools/autotest"
@@ -112,7 +112,7 @@ if [ ! -d $OPT/$ARM_ROOT ]; then
             sudo wget -O "$ARM_TARBALL" --progress=dot:giga $ARM_TARBALL_URL
         fi
 
-        sudo tar xjf ${ARM_TARBALL}
+        sudo tar xJf ${ARM_TARBALL}
     )
 fi
 
