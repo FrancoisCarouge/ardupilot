@@ -35,8 +35,6 @@ jobs:
       matrix:
         include:
           - os: ubuntu
-            name: jammy
-          - os: ubuntu
             name: noble
           - os: ubuntu
             name: resolute
@@ -44,8 +42,6 @@ jobs:
             name: latest
           - os: debian
             name: trixie
-          - os: debian
-            name: bookworm
     steps:
       - name: Install Git
         timeout-minutes: 30
@@ -136,7 +132,7 @@ jobs:
           source $HOME/venv-ardupilot/bin/activate || true
           case ${{matrix.os}} in
             *"archlinux"*)
-              export PATH=/opt/gcc-arm-none-eabi-10-2020-q4-major/bin:$PATH
+              export PATH=/opt/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi/bin:$PATH
               export PATH=/__w/ardupilot/ardupilot/ardupilot/Tools/autotest:$PATH
               ;;
           esac
