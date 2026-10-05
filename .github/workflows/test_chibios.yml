@@ -178,13 +178,16 @@ jobs:
         toolchain: [
             chibios,
         ]
-        gcc: [10]
+        gcc: [15]
 
     steps:
       # git checkout the PR
       - uses: actions/checkout@v7
         with:
           submodules: 'recursive'
+      - uses: ./.github/actions/setup-cxx26
+        with:
+          arm: 'true'
       - uses: ./.github/actions/setup-ccache
         with:
           key-suffix: ${{ matrix.config }}-${{ matrix.toolchain }}-${{ matrix.gcc }}
