@@ -42,3 +42,12 @@
 [submodule "modules/littlefs"]
 	path = modules/littlefs
 	url = https://github.com/ArduPilot/littlefs.git
+[submodule "modules/Kalman"]
+	path = modules/Kalman
+	url = https://github.com/FrancoisCarouge/Kalman.git
+[submodule "modules/TypedLinearAlgebra"]
+	path = modules/TypedLinearAlgebra
+	url = https://github.com/FrancoisCarouge/TypedLinearAlgebra.git
+[submodule "modules/mp-units"]
+	path = modules/mp-units
+	url = https://github.com/mpusz/mp-units.git
