@@ -25,7 +25,11 @@
 
 #include <stddef.h>
 
+#include <cmath>
+#include <limits>
 #include <tuple>
+#include <type_traits>
+#include <utility>
 
 #include "AP_LinearAlgebra_MathsMacrosPush.h"
 #include <fcarouge/typed_linear_algebra.hpp>
@@ -229,6 +233,60 @@ private:
     }
 };
 
+/*
+  solve x * b = a for x, b being symmetric positive definite, by the
+  Cholesky factorization b = L * transpose(L), without pivoting: x holds a
+  on entry, and b is overwritten. Each pivot is compared with the diagonal
+  element of b at its position, of the same unit, so that the test does not
+  depend on the units of a heterogeneous b. Returns false, x then undefined,
+  when b is not positive definite to working precision, singular included.
+ */
+template <typename T, size_t RA, size_t K>
+constexpr bool solve_right_positive_definite(Matrix<T, RA, K> &x, Matrix<T, K, K> &b)
+{
+    constexpr T tolerance = T(K) * std::numeric_limits<T>::epsilon();
+    // L in the lower triangle of b
+    for (size_t j = 0; j < K; j++) {
+        T d = b(j, j);
+        for (size_t k = 0; k < j; k++) {
+            d -= b(j, k) * b(j, k);
+        }
+        // negated to also reject NaN
+        if (!(d > tolerance * b(j, j))) {
+            return false;
+        }
+        // parenthesized, as sqrt may be a macro
+        const T l = (std::sqrt)(d);
+        b(j, j) = l;
+        for (size_t i = j + 1; i < K; i++) {
+            T sum = b(i, j);
+            for (size_t k = 0; k < j; k++) {
+                sum -= b(i, k) * b(j, k);
+            }
+            b(i, j) = sum / l;
+        }
+    }
+    for (size_t r = 0; r < RA; r++) {
+        // y * transpose(L) = a, forward
+        for (size_t i = 0; i < K; i++) {
+            T sum = x(r, i);
+            for (size_t k = 0; k < i; k++) {
+                sum -= b(i, k) * x(r, k);
+            }
+            x(r, i) = sum / b(i, i);
+        }
+        // x * L = y, backward
+        for (size_t i = K; i-- > 0;) {
+            T sum = x(r, i);
+            for (size_t k = i + 1; k < K; k++) {
+                sum -= b(k, i) * x(r, k);
+            }
+            x(r, i) = sum / b(i, i);
+        }
+    }
+    return true;
+}
+
 // a matrix whose element (i, j) has the type of the product of the i-th row
 // index and the j-th column index
 template <typename T, typename RowIndexes, typename ColumnIndexes>
@@ -243,5 +301,56 @@ using ColumnVector = fcarouge::typed_column_vector<Matrix<T, sizeof...(Types), 1
 // a row vector whose j-th element has the j-th type
 template <typename T, typename... Types>
 using RowVector = fcarouge::typed_row_vector<Matrix<T, 1, sizeof...(Types)>, Types...>;
+
+// the type of the element (i, j) of a typed matrix: vectors only have
+// single index access
+template <typename M, size_t i, size_t j>
+consteval auto element_type()
+{
+    if constexpr (M::rows == 1) {
+        return std::type_identity<std::remove_cvref_t<decltype(std::declval<const M &>().template at<j>())>>{};
+    } else if constexpr (M::columns == 1) {
+        return std::type_identity<std::remove_cvref_t<decltype(std::declval<const M &>().template at<i>())>>{};
+    } else {
+        return std::type_identity<std::remove_cvref_t<decltype(std::declval<const M &>().template at<i, j>())>>{};
+    }
+}
+
+template <typename M, size_t i, size_t j>
+using ElementType = typename decltype(element_type<M, i, j>())::type;
+
+// whether each element of the typed matrix From converts to the element of
+// To at its position: of the same dimension for mp-units quantities
+template <typename From, typename To>
+inline constexpr bool converts_elementwise = [] {
+    if constexpr (From::rows != To::rows || From::columns != To::columns) {
+        return false;
+    } else {
+        return []<size_t... k>(std::index_sequence<k...>) {
+            return (std::is_convertible_v<ElementType<From, k / To::columns, k % To::columns>,
+                                          ElementType<To, k / To::columns, k % To::columns>> && ...);
+        }(std::make_index_sequence<To::rows * To::columns>{});
+    }
+}();
+
+/*
+  x = a / b, the typed division, for b symmetric positive definite, a
+  normal matrix for example: solved by Cholesky factorization rather than
+  elimination, in place, with a test of b's definiteness that does not
+  depend on its units. Returns false when b is not positive definite to
+  working precision.
+ */
+template <typename A, typename B>
+constexpr bool divide_positive_definite(decltype(A{} / B{}) &x, const A &a, B b)
+{
+    static_assert(std::is_same_v<B, decltype(fcarouge::transposed(b))>,
+                  "a symmetric matrix has a symmetric type");
+    // the typed division derives its type from the first column of a and
+    // b only: check that the equation is dimensionally consistent
+    static_assert(converts_elementwise<decltype(x * b), A>,
+                  "x * b = a must be dimensionally consistent");
+    x.data() = a.data();
+    return solve_right_positive_definite(x.data(), b.data());
+}
 
 } // namespace AP_LinearAlgebra
