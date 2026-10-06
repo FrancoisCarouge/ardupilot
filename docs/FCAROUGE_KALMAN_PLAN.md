@@ -15,9 +15,14 @@ Libraries: [FrancoisCarouge/Kalman](https://github.com/FrancoisCarouge/Kalman) 0
 
 ## Objectives
 
-1. Replace ArduPilot's Kalman filters and heterogeneous linear algebra with the FrancoisCarouge
-   libraries (the phases below).
-2. Find shortcomings, frictions and improvement opportunities in the FrancoisCarouge projects, as a
+1. Replace ArduPilot's Kalman filters with FrancoisCarouge Kalman (Phases 5, 7, 8).
+2. Use FrancoisCarouge TypedLinearAlgebra for every heterogeneous linear algebra vector or matrix in
+   ArduPilot: any vector, matrix, array, struct or argument list whose elements have different units or
+   meanings and take part in linear algebra, including the ones not named as vectors (unions overlaying a
+   struct on an array, parameter blocks reached through a `float *`, state triplets passed as separate
+   arguments, polynomial coefficients, covariance and normal-equation matrices). The inventory below is
+   kept up to date as more are found.
+3. Find shortcomings, frictions and improvement opportunities in the FrancoisCarouge projects, as a
    real-world, safety-critical, embedded consumer. Every such finding is recorded in
    [FCAROUGE_FINDINGS.md](FCAROUGE_FINDINGS.md) with its evidence and a suggestion, and shared with the
    owner when found.
@@ -75,7 +80,27 @@ Kalman filters:
 | `AP_NavEKF3` | 24-state EKF, sequential scalar fusion | mixed | 7 |
 | `AP_NavEKF2` | 24-state EKF | mixed | 8 |
 
-Heterogeneous linear algebra (TLA only): `AP_Compass/CompassCalibrator`, `AP_AccelCal/AccelCalibrator`.
+Heterogeneous linear algebra (TypedLinearAlgebra), surveyed 2026-10-06:
+
+| Location | Heterogeneous vector or matrix | Form today | Phase |
+|---|---|---|---|
+| `AP_NavEKF3` `state_elements` / `statesArray` | 24 states: quaternion (1), velocity (m/s), position (m), gyro bias (rad per IMU step), accel bias (m/s per IMU step), earth and body field (Gauss), wind (m/s); 24x24 covariance `P` | union of a struct and `Vector24`; `Matrix24` | 7 |
+| `AP_NavEKF3` `output_elements` | quaternion, velocity (m/s), position (m) | struct | 7 |
+| `AP_NavEKF2` `statesArray` | 28 states, same groups | union with `Vector28` | 8 |
+| `AP_NavEKF/EKFGSF_yaw` | per model `[vN m/s, vE m/s, yaw rad]` and 3x3 covariance | `ftype X[3]`, `ftype P[3][3]` | 5 |
+| `AP_Soaring/ExtendedKalmanFilter` | `[strength m/s, radius m, x m, y m]` | done on the pilot branch | 5 |
+| `AC_PrecLand/PosVelEKF` | `[pos m, vel m/s]`, 2x2 covariance | `float _state[2]`, `float _cov[3]` | 5 |
+| `AP_Airspeed/Airspeed_Calibration` | `[wind N m/s, wind E m/s, 1/sqrt(ratio)]` and covariance | `Vector3f state`, `Matrix3f P` | 5 |
+| `AP_Mount/SoloGimbalEKF` | 13 states: angle error (rad), velocity (m/s), gyro bias (rad/s), quaternion | `Vector13` and struct | 5 |
+| `AP_Compass/CompassCalibrator` `param_t` | `[radius mGauss, offset mGauss x3, diag x3, offdiag x3, scale]`; Levenberg-Marquardt Jacobians and `JTJ` | struct reached as `float *` (`get_sphere_params()`, `get_ellipsoid_params()`) | 6 |
+| `AP_AccelCal/AccelCalibrator` `param_u` | `[offset m/s^2 x3, diag x3, offdiag x3]`; Gauss-Newton normal equations | union of `param_t` and `VectorN<float, 9>` (type punning) | 6 |
+| `AP_InertialSensor` temperature calibration, `AP_Math/polyfit.h` | polynomial coefficients per degree (unit/K, unit/K^2, unit/K^3); normal-equation matrix of powers of temperature | `AP_Vector3f coeff[3]`; `PolyFit::mat[order][order]` | 6 |
+| `AP_Math/control.h` kinematic shaping | `[position, velocity, acceleration]` states (and jerk limits) | separate arguments of `update_pos_vel_accel*`, `shape_pos_vel_accel*`, `shape_angle_vel_accel` | 6 |
+| `AP_Math/SCurve` segments | `[jerk, accel, vel, pos]` per segment | struct fields | 6 |
+| `APM_Control/AP_AutoTune` `ATGains` | `[FF, P, I, D, IMAX]` gains of different units | struct, no vector arithmetic | 6, low value |
+
+Excluded after review: `Location` (latitude, longitude, altitude: frame conversions, not linear algebra),
+per-instance parameter arrays, rotation matrices (uniform), SITL physics models (not flight code).
 
 Excluded (not Kalman filters / not flight code): TECS complementary filters, Variometer and `Filter/`
 low-pass/notch filters, `AP_InertialNav`, SITL `SIM_*`.
@@ -128,9 +153,14 @@ Equivalence trace captured from the old implementation before removal.
 4. `EKFGSF_yaw`. Autotests `GSF`, `GSF_reset`, `EKFYawResetLogged`; Replay.
 5. `SoloGimbalEKF` (build only).
 
-### Phase 6: TLA in calibrators (1-2 weeks)
+### Phase 6: TypedLinearAlgebra for the other heterogeneous vectors (3-5 weeks)
 
-`CompassCalibrator`, `AccelCalibrator`: typed parameter vectors and Jacobians.
+The non-Kalman entries of the TypedLinearAlgebra inventory, each with an equivalence test against the
+current code: `CompassCalibrator` and `AccelCalibrator` parameter vectors, Jacobians and normal equations
+(the accel calibrator's struct/array union is also type punning), IMU temperature calibration
+coefficients and `PolyFit`, the `[position, velocity, acceleration]` states of the kinematic shaping
+functions, and SCurve segments. Not blocked by F2: TypedLinearAlgebra and mp-units build for ChibiOS.
+Keep looking for heterogeneous vectors not yet in the inventory.
 
 ### Phase 7: Full EKF3 replacement (largest phase, ~2-3 months)
 
