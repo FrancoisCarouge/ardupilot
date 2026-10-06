@@ -180,6 +180,8 @@ jobs:
           sudo apt-get -y install clang-tools-20
           sudo ln -sf /usr/bin/scan-build-20 /usr/bin/scan-build
           export PATH="/github/home/.local/bin:$PATH"
+          # scan-build's compiler wrappers otherwise run the default g++ 13
+          export CCC_CC=gcc-14 CCC_CXX=g++-14
           mkdir -p "$GITHUB_WORKSPACE/tmp"
           CI_BUILD_TARGET="clang_scan_build" Tools/scripts/build_ci.sh  >$HOME/scan-build-stdout.txt
 

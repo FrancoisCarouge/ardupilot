@@ -59,13 +59,31 @@ runs:
             PKGS="$PKGS gcc-14-$prefix g++-14-$prefix"
         done
         $SUDO apt-get update -qq
+        # releases without gcc-14 (Ubuntu 22.04, as in the ROS images) get it
+        # from the toolchain PPA
+        if ! apt-cache show gcc-14 > /dev/null 2>&1; then
+            $SUDO apt-get install -y --no-install-recommends software-properties-common gpg-agent
+            $SUDO add-apt-repository -y ppa:ubuntu-toolchain-r/test
+            $SUDO apt-get update -qq
+        fi
         $SUDO apt-get install -y --no-install-recommends $PKGS
         if [ "$SETUP_CLANG" = "true" ]; then
             $SUDO ln -sf /usr/bin/clang-20 /usr/bin/clang
             $SUDO ln -sf /usr/bin/clang++-20 /usr/bin/clang++
         fi
-        if command -v update-ccache-symlinks > /dev/null; then
-            $SUDO update-ccache-symlinks
+        # route the new compilers through ccache, keeping the image's own
+        # ccache links (update-ccache-symlinks would remove the cross ones)
+        if [ -d /usr/lib/ccache ]; then
+            for compiler in gcc-14 g++-14 clang-20 clang++-20; do
+                if [ -x "/usr/bin/$compiler" ]; then
+                    $SUDO ln -sf ../../bin/ccache "/usr/lib/ccache/$compiler"
+                fi
+            done
+            for prefix in $SETUP_CROSS; do
+                for compiler in gcc-14 g++-14; do
+                    $SUDO ln -sf ../../bin/ccache "/usr/lib/ccache/$prefix-$compiler"
+                done
+            done
         fi
 
     - name: restore Arm GNU Toolchain
@@ -121,7 +139,7 @@ runs:
         rm "$MUSL_ROOT.tar.xz"
         # the Buildroot wrappers run <name>.br_real from their own directory,
         # so the waf toolchain names must live next to them
-        cd /opt/arm-linux-musleabihf-15/bin
+        cd /opt/arm-linux-musleabihf-15/bin || exit 1
         for f in arm-buildroot-linux-musleabihf-*; do
             $SUDO ln -sf "$f" "${f/arm-buildroot-linux-musleabihf/arm-linux-musleabihf}"
         done
