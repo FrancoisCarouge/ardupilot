@@ -171,6 +171,8 @@ jobs:
         with:
           submodules: 'recursive'
       - uses: ./.github/actions/setup-cxx26
+        with:
+          arm: ${{ matrix.config == 'stm32h7' }}
       - uses: ./.github/actions/setup-ccache
         with:
           key-suffix: ${{ matrix.config }}
