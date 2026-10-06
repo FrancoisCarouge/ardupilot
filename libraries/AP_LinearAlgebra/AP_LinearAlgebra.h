@@ -27,7 +27,9 @@
 
 #include <tuple>
 
+#include "AP_LinearAlgebra_MathsMacrosPush.h"
 #include <fcarouge/typed_linear_algebra.hpp>
+#include "AP_LinearAlgebra_MathsMacrosPop.h"
 
 namespace AP_LinearAlgebra {
 

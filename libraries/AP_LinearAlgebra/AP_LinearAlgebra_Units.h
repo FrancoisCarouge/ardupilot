@@ -18,8 +18,10 @@
  */
 #pragma once
 
+#include "AP_LinearAlgebra_MathsMacrosPush.h"
 #include <fcarouge/mp_units.hpp>
 #include <mp-units/systems/si.h>
+#include "AP_LinearAlgebra_MathsMacrosPop.h"
 
 #include "AP_LinearAlgebra.h"
 
