@@ -276,6 +276,15 @@ SECTIONS
         *(.gcc*)
     } > default_flash
 
+    /* the C libraries' unwind entries cannot reach their code in external
+       flash from instruction RAM; without C++ exceptions they are unused */
+    /DISCARD/ :
+    {
+        *libc_nano.a:*(.ARM.extab* .ARM.exidx*)
+        *libg_nano.a:*(.ARM.extab* .ARM.exidx*)
+        *libm.a:*(.ARM.extab* .ARM.exidx*)
+    }
+
     .ARM.extab :
     {
         *(.ARM.extab* .gnu.linkonce.armextab.*)
