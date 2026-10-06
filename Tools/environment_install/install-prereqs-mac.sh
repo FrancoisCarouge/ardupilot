@@ -63,19 +63,23 @@ fi
 
 # ArduPilot official Toolchain for STM32 boards
 function install_arm_none_eabi_toolchain() {
-    # GNU Tools for ARM Embedded Processors
-    # (see https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-rm/downloads)
-    ARM_ROOT="gcc-arm-none-eabi-10-2020-q4-major"
-    ARM_TARBALL="$ARM_ROOT-mac.tar.bz2"
-    ARM_TARBALL_URL="https://firmware.ardupilot.org/Tools/STM32-tools/$ARM_TARBALL"
+    # Arm GNU Toolchain for Arm Embedded Processors
+    # (see https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)
+    if [ "$(uname -m)" != "arm64" ]; then
+        echo "Arm GNU Toolchain 15.2 is only published for Apple silicon, skipping STM32 toolchain"
+        return
+    fi
+    ARM_ROOT="arm-gnu-toolchain-15.2.rel1-darwin-arm64-arm-none-eabi"
+    ARM_TARBALL="$ARM_ROOT.tar.xz"
+    ARM_TARBALL_URL="https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/$ARM_TARBALL"
     if [ ! -d $OPT/$ARM_ROOT ]; then
         (
             cd $OPT;
             echo "Installing toolchain for STM32 Boards"
-            echo "Downloading from ArduPilot server"
+            echo "Downloading from Arm"
             sudo wget $ARM_TARBALL_URL
             echo "Installing..."
-            sudo tar xjf ${ARM_TARBALL}
+            sudo tar xJf ${ARM_TARBALL}
             echo "... Cleaning"
             sudo rm ${ARM_TARBALL};
         )
@@ -186,7 +190,7 @@ echo "Adding ArduPilot Tools to environment"
 SCRIPT_DIR=$(dirname $(grealpath ${BASH_SOURCE[0]}))
 ARDUPILOT_ROOT=$(grealpath "$SCRIPT_DIR/../../")
 
-if [[ $DO_AP_STM_ENV -eq 1 ]]; then
+if [[ $DO_AP_STM_ENV -eq 1 ]] && [ -n "$ARM_ROOT" ]; then
 exportline="export PATH=$OPT/$ARM_ROOT/bin:\$PATH";
 grep -Fxq "$exportline" ~/$SHELL_LOGIN 2>/dev/null || {
     if maybe_prompt_user "Add $OPT/$ARM_ROOT/bin to your PATH [N/y]?" ; then
