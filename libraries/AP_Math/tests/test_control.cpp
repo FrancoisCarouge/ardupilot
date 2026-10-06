@@ -647,8 +647,10 @@ TEST(Control, test_limit_accel_reversal_no_lateral_spike)
     // sweep the reference North component through zero
     for (float rn = 1.0f; rn >= -1.0f; rn -= 0.005f) {
         const Vector2f vel_norm{rn, residual_e};
-        Vector2f accel(accel_cmd_n, 0.0f);
-        limit_accel_xy(vel_norm, accel, accel_max);
+        Vector2f accel;
+        accel.x = accel_cmd_n;
+        accel.y = 0.0f;
+        IGNORE_RETURN(limit_accel_xy(vel_norm, accel, accel_max));
         // command has zero East; output East is pure injected cross-axis error
         worst_east = MAX(worst_east, fabsf(accel.y));
         // magnitude must always respect the limit
