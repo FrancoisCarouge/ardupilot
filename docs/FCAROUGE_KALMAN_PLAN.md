@@ -19,8 +19,8 @@ Libraries: [FrancoisCarouge/Kalman](https://github.com/FrancoisCarouge/Kalman) 0
    libraries (the phases below).
 2. Find shortcomings, frictions and improvement opportunities in the FrancoisCarouge projects, as a
    real-world, safety-critical, embedded consumer. Every such finding is recorded in
-   [Findings for the FrancoisCarouge projects](#findings-for-the-francoiscarouge-projects) with its
-   evidence and a suggestion, and shared with the owner when found.
+   [FCAROUGE_FINDINGS.md](FCAROUGE_FINDINGS.md) with its evidence and a suggestion, and shared with the
+   owner when found.
 
 ## Moving targets: upstream libraries and fork master
 
@@ -156,24 +156,6 @@ Remove `MatrixN`/`VectorN` once unused; library README.
 - No heap after init, no exceptions/RTTI, `float`/`ftype` not double.
 - No parameter index or log format changes.
 - GPLv3 headers on new files; astyle on changed code only.
-
-## Findings for the FrancoisCarouge projects
-
-Status: open (not reported upstream yet), reported, fixed (with the upstream version).
-Library versions examined: Kalman `2fbb1e2`, TypedLinearAlgebra `8eb0b1c` (2026-10-05).
-
-| ID | Library | Kind | Finding | Evidence | Suggestion | Status |
-|---|---|---|---|---|---|---|
-| F1 | Kalman | Embedded | `kalman_internal::function` type-erases callables with `std::make_unique` and virtual dispatch; constructing or reassigning a callable allocates. ArduPilot forbids heap allocation after init. | `kalman_internal/function.hpp:53,56` (the file's own `@todo` asks for small-storage alternatives). | Store callables by value in the filter type (template parameter, no type erasure), or a fixed-capacity inline buffer with a static size check. | open |
-| F2 | Kalman | Embedded, build | `kalman.hpp` always includes `<print>` and `<format>` through `print.hpp` and `format.hpp`, even when no formatting is used. Forces a standard library that ships `<print>` (fails on GCC 13's libstdc++) and costs compile time. | `kalman.hpp:51-52`, `kalman_internal/print.hpp:44`. A 1x1 filter compiles to 32 bytes, so it costs no code size, only portability and build time. | Move formatting and printing to an opt-in header (for example `fcarouge/kalman_format.hpp`). | open |
-| F3 | Both | Docs | Minimum compilers are documented differently and conservatively: Kalman says "Clang 20+, GCC 14+", TLA says "Clang with libc++, GCC 14+". Both build with clang 19 and with clang 19-21 against libstdc++ 15; clang 18 fails with libstdc++ 15 `<format>`. | Probes on g++-14/15, clang++-18/19/20/21, Arm GCC 15.2. | Document one tested matrix (compiler x standard library) for both projects, and test the floor in CI. | open |
-| F4 | Both | Embedded, CI | No CI coverage of a freestanding-like embedded configuration. Both libraries happen to build cleanly for Cortex-M4/M7 with `-fno-exceptions -fno-rtti -fsingle-precision-constant -Wdouble-promotion -Werror=shadow,undef,float-equal`, but nothing guards it. | Phase 0 probes with Arm GCC 15.2. | Add a CI job cross-compiling the samples for `arm-none-eabi` with those flags and a code size report. | open |
-| F5 | TLA | Usability | The requirements on a backend matrix type are not documented. They are discovered from errors deep in the implementation, e.g. a missing `operator()(std::size_t)` reports `no match for call to (fixed_matrix) (std::size_t)` in `typed_linear_algebra.tpp`. | Phase 0 probe backend. | Document the backend contract (element access forms, arithmetic, `transpose`, `Zero`) and check it with a named concept and a readable `static_assert` at `typed_matrix` instantiation. | open |
-| F6 | TLA, Kalman | Embedded | No owning, fixed-size, allocation-free backend ships with the libraries. The `std` backends wrap non-owning `std::mdspan` views over Kokkos' reference `std::linalg`; Eigen and Armadillo are heavy for microcontrollers. | `support/chrono_std`, `support/kokkos`. A 30-line owning `float[R*C]` backend was enough for the probe (102 bytes of code on Cortex-M4). | Ship a minimal owning fixed-size backend in `support/` as the embedded reference. | open |
-| F7 | Kalman | Features (EKF3) | ArduPilot's 24-state EKF needs: sequential scalar fusion (one row of H per update), state masking (inhibited states), access to the innovation and its covariance S, update rejection (innovation gating), a replaceable covariance prediction (generated sparse code), and post-update hooks (symmetrisation, variance clamping, state limits). | `AP_NavEKF3`, `EKFGSF_yaw`, `Airspeed_Calibration`, `AP_Soaring`. | Customization points for each; see Phase 2. | open |
-| F8 | Kalman | Features | The update equation is fixed to the Joseph form by default; ArduPilot filters use the simple form `P -= K * P12'` followed by symmetrisation. Equivalence with the existing filters needs a selectable update form. | `AP_Soaring/ExtendedKalmanFilter.cpp`, `Airspeed_Calibration.cpp`. | Make the covariance update form a customization point (Joseph, simple, simple plus symmetrise). | open |
-| F9 | Both | Process | Both projects change daily (several commits on 2026-10-04 and 2026-10-05). A consumer that pins versions needs frequent tagged releases and a changelog entry per release. | `git log` of both repositories. TLA has `CHANGELOG.md`; Kalman gained one on 2026-10-05. | Tag releases (semantic versioning) whenever the public API or requirements change. | open |
-| F10 | TLA | Positive | Unit mismatches give a clear compile-time message ("Matrix addition requires compatible element types") and the typing has no code-size cost. | Phase 0 probe. | Keep; worth showcasing in the README. | n/a |
 
 ## Phase 0 log
 
@@ -376,4 +358,19 @@ clang 18 fails on libstdc++ 15 `<format>` (immediate-function error) with both l
 - Done: `test_wasm_plane` checked locally with emscripten 6.0.8 (clang 24, libc++): ArduPlane wasm builds
   at gnu++26 and `wasm_plane_smoke_test.mjs` passes (needs emsdk's Node 24; the host Node 18 cannot load
   the module). No workflow change needed.
-- ESP32 esp-idf v6.0 port, QURT Hexagon SDK upgrade (owner provides the SDK), Linux SBC GCC 15 cross.
+- Done: ESP32 on ESP-IDF v6.0.3 (xtensa GCC 15.2). `esp32buzz` and `esp32s3empty` build plane and copter
+  (the CI matrix). Changes: RC input (`RmtSigReader`) moved to the RMT RX driver; unused
+  `SoftSigReaderRMT` removed; MCPWM capabilities via `MCPWM_LL_GET()`; explicit esp-idf components and
+  `esp_hal_wdt` link order; newlib kept (`CONFIG_LIBC_NEWLIB=y`, v6.0 defaults to picolibc);
+  `SPI2_HOST`/`SPI3_HOST`; `esp32_get_idf.sh` and `esp32_build.yml` on v6.0.3 (installed and cached in
+  CI). `OSD.cpp` (legacy MCPWM/I2S) is behind `WITH_INT_OSD`, defined by no board, so it never compiles.
+- ESP32 follow-ups:
+  - RC input on the new RMT driver must be tested on hardware with a receiver before flight (human).
+  - Port `I2CDevice` and `i2c_sw.c` from the legacy I2C driver (end-of-life in v6.0, removed in v7.0)
+    to the I2C master driver.
+  - Consider moving from newlib to picolibc.
+  - New GCC 15 warning on xtensa: `-Walloc-size-larger-than` at `AP_Math/matrix_alg.cpp:38`
+    (`NEW_NOTHROW T[n*n]` overflow check).
+  - Pre-existing: `esp32_get_idf.sh` compares `git rev-parse HEAD` with the literal `'$COMMIT'`, so
+    its commit check never matches.
+- QURT Hexagon SDK upgrade (owner provides the SDK).
