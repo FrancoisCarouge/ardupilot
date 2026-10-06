@@ -155,9 +155,13 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    # ESP-IDF toolchain is baked into this image (see ardupilot_dev_docker
-    # Dockerfile_dev-esp32). Keep the tag in sync with the rest of CI.
+    # the image bakes in ESP-IDF v5.3 (see ardupilot_dev_docker
+    # Dockerfile_dev-esp32); C++26 needs ESP-IDF v6.0, installed and cached
+    # below. Keep the tag in sync with the rest of CI.
     container: ardupilot/ardupilot-dev-esp32:v0.2.0
+    env:
+      IDF_PATH: /opt/esp_idf6
+      IDF_TOOLS_PATH: /opt/espressif6
     permissions:
       contents: read
       actions: write  # save-ccache prunes the previous cache entry
@@ -168,12 +172,32 @@ jobs:
             esp32buzz,
             esp32s3empty,
         ]
-        gcc: [10]
 
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: 'recursive'
+
+      - name: restore ESP-IDF v6.0.3
+        id: idf-cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            /opt/esp_idf6
+            /opt/espressif6
+          key: esp-idf-v6.0.3-esp32-esp32s3
+
+      # same version as Tools/scripts/esp32_get_idf.sh
+      - name: install ESP-IDF v6.0.3
+        if: steps.idf-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git clone -b v6.0.3 --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/espressif/esp-idf.git "$IDF_PATH"
+          "$IDF_PATH"/install.sh esp32,esp32s3
+          "$IDF_TOOLS_PATH"/python_env/*/bin/python -m pip install --no-cache-dir -U \
+            empy==3.3.4 pexpect lxml pymavlink MAVProxy geocoder dronecan "pydantic<2.12"
+          rm -rf "$IDF_TOOLS_PATH/dist"
 
       - uses: ./.github/actions/setup-ccache
         with:
@@ -199,7 +223,7 @@ jobs:
         shell: bash
         run: |
           git config --global --add safe.directory ${GITHUB_WORKSPACE}
-          # ESP-IDF and its toolchain are baked into the container at $IDF_PATH
+          # ESP-IDF v6.0 and its toolchain are installed at $IDF_PATH
           source $IDF_PATH/export.sh
           which cmake
           ./waf configure --board ${{matrix.config}}
