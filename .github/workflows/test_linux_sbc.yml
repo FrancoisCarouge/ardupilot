@@ -185,6 +185,7 @@ jobs:
       - uses: ./.github/actions/setup-cxx26
         with:
           cross: ${{ matrix.toolchain == 'armhf' && 'arm-linux-gnueabihf' || matrix.toolchain == 'aarch64' && 'aarch64-linux-gnu' || '' }}
+          musl: ${{ matrix.toolchain == 'armhf-musl' }}
       - uses: ./.github/actions/setup-ccache
         with:
           key-suffix: ${{ matrix.config }}-${{ matrix.toolchain }}
