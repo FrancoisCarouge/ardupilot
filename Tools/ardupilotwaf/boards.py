@@ -347,10 +347,12 @@ class Board:
 
         cfg.msg("CXX Compiler", "%s %s"  % (cfg.env.COMPILER_CXX, ".".join(cfg.env.CC_VERSION)))
 
-        # C++26 requires at least g++ 14 or clang 19; Apple clang has its own
-        # numbering, Apple clang 17 (Xcode 16.3) is based on LLVM 19
+        # C++26 requires at least g++ 14 or clang 20 (clang 19 cannot parse
+        # libstdc++ 15 <format> as used by mp-units); Apple clang has its own
+        # numbering, Apple clang 17 (Xcode 16.3) is based on LLVM 19 and
+        # uses libc++
         if 'clang' in cfg.env.COMPILER_CXX:
-            min_clang = 19
+            min_clang = 20
             if 'Apple clang' in cfg.cmd_and_log(cfg.env.CXX + ['--version']):
                 min_clang = 17
             if not self.cc_version_gte(cfg, min_clang, 0):
