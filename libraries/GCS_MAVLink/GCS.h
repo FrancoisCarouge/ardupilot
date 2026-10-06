@@ -124,10 +124,10 @@ private:
         uint16_t interval;
     };
 
-    from_file_default_interval *_intervals;
+    from_file_default_interval *_intervals = nullptr;
 
-    uint16_t _num_intervals;
-    uint16_t _max_intervals;
+    uint16_t _num_intervals = 0;
+    uint16_t _max_intervals = 0;
 };
 #endif
 
