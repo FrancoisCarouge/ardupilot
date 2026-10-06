@@ -2,7 +2,7 @@ name: setup-cxx26
 description: >
   Install C++26-capable compilers inside the ardupilot-dev Ubuntu 24.04
   containers: g++-14 (picked by waf when the default g++ is older), and
-  optionally clang-19, Arm GNU Toolchain 15.2 for ChibiOS, and GCC 14 cross
+  optionally clang-20, Arm GNU Toolchain 15.2 for ChibiOS, and GCC 14 cross
   compilers for Linux boards.
 
 inputs:
@@ -13,7 +13,7 @@ inputs:
     required: false
     default: 'false'
   clang:
-    description: Install clang-19 and point clang/clang++ at it.
+    description: Install clang-20 and point clang/clang++ at it.
     required: false
     default: 'false'
   multilib:
@@ -50,7 +50,7 @@ runs:
         fi
         PKGS="gcc-14 g++-14"
         if [ "$SETUP_CLANG" = "true" ]; then
-            PKGS="$PKGS clang-19 llvm-19"
+            PKGS="$PKGS clang-20 llvm-20"
         fi
         if [ "$SETUP_MULTILIB" = "true" ]; then
             PKGS="$PKGS g++-14-multilib"
@@ -61,8 +61,8 @@ runs:
         $SUDO apt-get update -qq
         $SUDO apt-get install -y --no-install-recommends $PKGS
         if [ "$SETUP_CLANG" = "true" ]; then
-            $SUDO ln -sf /usr/bin/clang-19 /usr/bin/clang
-            $SUDO ln -sf /usr/bin/clang++-19 /usr/bin/clang++
+            $SUDO ln -sf /usr/bin/clang-20 /usr/bin/clang
+            $SUDO ln -sf /usr/bin/clang++-20 /usr/bin/clang++
         fi
         if command -v update-ccache-symlinks > /dev/null; then
             $SUDO update-ccache-symlinks

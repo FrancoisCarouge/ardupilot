@@ -172,13 +172,13 @@ jobs:
         shell: bash
         run: |
           git config --global --add safe.directory ${GITHUB_WORKSPACE}
-          # C++26 needs clang 19 or later; match the clang installed by
+          # C++26 needs clang 20 or later; match the clang installed by
           # setup-cxx26. scan_build_suppressions.py records an issue hash per
           # clang major version, and process_scan_build_output.py reads the
           # version out of the reports.
           sudo apt update
-          sudo apt-get -y install clang-tools-19
-          sudo ln -sf /usr/bin/scan-build-19 /usr/bin/scan-build
+          sudo apt-get -y install clang-tools-20
+          sudo ln -sf /usr/bin/scan-build-20 /usr/bin/scan-build
           export PATH="/github/home/.local/bin:$PATH"
           mkdir -p "$GITHUB_WORKSPACE/tmp"
           CI_BUILD_TARGET="clang_scan_build" Tools/scripts/build_ci.sh  >$HOME/scan-build-stdout.txt
