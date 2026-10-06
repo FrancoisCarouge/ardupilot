@@ -195,8 +195,10 @@ jobs:
           git clone -b v6.0.3 --depth 1 --recurse-submodules --shallow-submodules \
             https://github.com/espressif/esp-idf.git "$IDF_PATH"
           "$IDF_PATH"/install.sh esp32,esp32s3
-          "$IDF_TOOLS_PATH"/python_env/*/bin/python -m pip install --no-cache-dir -U \
-            empy==3.3.4 pexpect lxml pymavlink MAVProxy geocoder dronecan "pydantic<2.12"
+          for python in "$IDF_TOOLS_PATH"/python_env/*/bin/python; do
+            "$python" -m pip install --no-cache-dir -U \
+              empy==3.3.4 pexpect lxml pymavlink MAVProxy geocoder dronecan "pydantic<2.12"
+          done
           rm -rf "$IDF_TOOLS_PATH/dist"
 
       - uses: ./.github/actions/setup-ccache
