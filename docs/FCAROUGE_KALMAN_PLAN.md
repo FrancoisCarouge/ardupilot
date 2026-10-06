@@ -375,3 +375,36 @@ clang 18 fails on libstdc++ 15 `<format>` (immediate-function error) with both l
   - Pre-existing: `esp32_get_idf.sh` compares `git rev-parse HEAD` with the literal `'$COMMIT'`, so
     its commit check never matches.
 - QURT Hexagon SDK upgrade (owner provides the SDK).
+
+## Phase 1 CI results (PR 3)
+
+First full CI run (2026-10-06): 87 jobs passed, 32 failed. Causes and fixes:
+
+- Bootloaders (`Tools/AP_Bootloader`) not C++26 clean (volatile `--`, `register`): fixed; Phase 0 never
+  built a bootloader.
+- `setup-cxx26` ran `update-ccache-symlinks`, which removed the images' cross compiler ccache links:
+  replaced by explicit links.
+- Unit test and DDS containers ran as user 1001 and could not install compilers: run as root.
+- ROS images (Ubuntu 22.04) lack `gcc-14`: installed from the `ubuntu-toolchain-r/test` PPA.
+- scan-build's compiler wrappers used the default g++ 13: `CCC_CC`/`CCC_CXX` set to gcc-14/g++-14.
+- Cygwin pinned `gcc-g++` 13.4: now 14.4.
+- SPRacingH7 (H750 external flash) failed to link: Arm 15.2 newlib `.ARM.exidx` entries out of PREL31
+  range; the C libraries' unwind entries are discarded in `common_extf_h750.ld`.
+- armhf GCC 14.2 cross reported `-Werror=unused-value` on a braced `Vector2f` in `test_control.cpp`:
+  parentheses.
+
+## Phase 5 log
+
+### AP_Soaring thermal EKF (pilot)
+
+- `ExtendedKalmanFilter` reimplemented on Kalman with units: state `[m/s, m, m, m]`, output m/s, prediction
+  and update arguments in metres. The public shape is kept (`X[4]`, `reset()`, `update()`); `reset()`
+  takes plain arrays, so `AP_Soaring` no longer uses `MatrixN`/`VectorN`.
+- Equivalence with the legacy filter over three thermals (600 steps, resets reusing the filter): maximum
+  relative state difference 8e-6, despite the Joseph covariance update (F8). Autotest `Plane.Soaring`
+  passes (thermal detected, climb to `SOAR_ALT_MAX`). SITL plane builds with g++ 15 and clang 20.
+- Cortex-M4 cost: 4072 B code and 360 B RAM versus 1040 B and 0 B (F21).
+- The Kalman headers are confined to `ExtendedKalmanFilter.cpp` (F22). The filter object is allocated
+  once, on the first `reset()` (first thermal), because Kalman allocates its callables (F1); owner review
+  requested.
+- Blocked on ChibiOS by F2: the soaring changes are kept local until Kalman no longer requires `<print>`.
