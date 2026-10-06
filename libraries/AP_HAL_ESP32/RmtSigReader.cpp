@@ -7,21 +7,44 @@ using namespace ESP32;
 
 void RmtSigReader::init()
 {
-    rmt_config_t config = {};
-    config.rmt_mode = RMT_MODE_RX;
-    config.channel = RMT_CHANNEL_4; // On S3, Channel 0 ~ 3 (TX channel) are dedicated to sending signals. Channel 4 ~ 7 (RX channel) are dedicated to receiving signals, so this pin choice is compatible with both.
-    config.clk_div = 80;   //80MHZ APB clock to the 1MHZ target frequency
+    rmt_rx_channel_config_t config {};
     config.gpio_num = HAL_ESP32_RCIN;
-    config.mem_block_num = 2; //each block could store 64 pulses
-    config.flags = 0;
-    config.rx_config.filter_en = true;
-    config.rx_config.filter_ticks_thresh = 8;
-    config.rx_config.idle_threshold = idle_threshold;
+    config.clk_src = RMT_CLK_SRC_DEFAULT;
+    config.resolution_hz = frequency;
+    config.mem_block_symbols = max_pulses; //each block could store 64 pulses
 
-    rmt_config(&config);
-    rmt_driver_install(config.channel, max_pulses * 8, 0);
-    rmt_get_ringbuf_handle(config.channel, &handle);
-    rmt_rx_start(config.channel, true);
+    // 8 ticks of the 80MHz APB clock is a 100ns glitch filter, and the frame
+    // ends after idle_threshold ticks of the 1MHz resolution
+    receive_config.signal_range_min_ns = 100;
+    receive_config.signal_range_max_ns = idle_threshold * (1000000000 / frequency);
+    receive_config.flags.en_partial_rx = 0;
+
+    // the receive done callback copies each frame into this ring buffer
+    handle = xRingbufferCreate(max_pulses * 8, RINGBUF_TYPE_NOSPLIT);
+
+    rmt_rx_event_callbacks_t callbacks {};
+    callbacks.on_recv_done = on_recv_done;
+
+    // on failure no pulses are read, as with no receiver connected
+    if (handle == nullptr ||
+        rmt_new_rx_channel(&config, &channel) != ESP_OK ||
+        rmt_rx_register_event_callbacks(channel, &callbacks, this) != ESP_OK ||
+        rmt_enable(channel) != ESP_OK ||
+        rmt_receive(channel, rx_symbols, sizeof(rx_symbols), &receive_config) != ESP_OK) {
+        return;
+    }
+    started = true;
+}
+
+// runs in ISR context: queue the received frame and start the next reception
+bool RmtSigReader::on_recv_done(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *edata, void *user_ctx)
+{
+    RmtSigReader *reader = (RmtSigReader *)user_ctx;
+    BaseType_t task_woken = pdFALSE;
+    xRingbufferSendFromISR(reader->handle, edata->received_symbols,
+                           edata->num_symbols * sizeof(rmt_symbol_word_t), &task_woken);
+    rmt_receive(channel, reader->rx_symbols, sizeof(reader->rx_symbols), &reader->receive_config);
+    return task_woken == pdTRUE;
 }
 
 bool RmtSigReader::add_item(uint32_t duration, bool level)
@@ -48,9 +71,12 @@ bool RmtSigReader::add_item(uint32_t duration, bool level)
 
 bool RmtSigReader::read(uint32_t &width_high, uint32_t &width_low)
 {
+    if (!started) {
+        return false;
+    }
     if (item == nullptr) {
-        item = (rmt_item32_t*) xRingbufferReceive(handle, &item_size, 0);
-        item_size /= 4;
+        item = (rmt_symbol_word_t*) xRingbufferReceive(handle, &item_size, 0);
+        item_size /= sizeof(rmt_symbol_word_t);
         current_item = 0;
     }
     if (item == nullptr) {

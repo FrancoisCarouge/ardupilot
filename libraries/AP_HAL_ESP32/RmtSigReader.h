@@ -17,7 +17,8 @@
 
 #include <AP_HAL/utility/RingBuffer.h>
 #include "AP_HAL_ESP32.h"
-#include "driver/rmt.h"
+#include "driver/rmt_rx.h"
+#include "freertos/ringbuf.h"
 
 class ESP32::RmtSigReader
 {
@@ -29,9 +30,13 @@ public:
     bool read(uint32_t &width_high, uint32_t &width_low);
 private:
     bool add_item(uint32_t duration, bool level);
+    static bool on_recv_done(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *edata, void *user_ctx);
 
+    rmt_channel_handle_t channel;
+    rmt_receive_config_t receive_config;
+    rmt_symbol_word_t rx_symbols[max_pulses];
     RingbufHandle_t handle;
-    rmt_item32_t* item;
+    rmt_symbol_word_t* item;
     size_t item_size;
     size_t current_item;
 
@@ -39,4 +44,5 @@ private:
     uint32_t ready_high;
     uint32_t ready_low;
     bool pulse_ready;
+    bool started;
 };
