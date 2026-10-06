@@ -79,6 +79,34 @@ TEST(LinearAlgebraMatrix, RightDivision)
     EXPECT_FLOAT_EQ(q(1), 1.5f);
 }
 
+TEST(LinearAlgebraMatrix, NonSquareDivision)
+{
+    // more rows than columns: the minimum norm solution of x * b = a
+    const Matrix<float, 3, 1> b{{1, 2, 2}};
+    const Matrix<float, 2, 1> a{{3, 6}};
+    const Matrix<float, 2, 3> x = a / b;
+    const Matrix<float, 2, 1> back = x * b;
+    for (size_t k = 0; k < 2; k++) {
+        EXPECT_NEAR(back.v[k], a.v[k], 1e-5f);
+    }
+    // x = a * transpose(b) / (transpose(b) * b): row 0 is 3 * [1 2 2] / 9
+    EXPECT_NEAR(x(0, 0), 1.0f / 3.0f, 1e-6f);
+    EXPECT_NEAR(x(0, 1), 2.0f / 3.0f, 1e-6f);
+    EXPECT_NEAR(x(0, 2), 2.0f / 3.0f, 1e-6f);
+
+    // fewer rows than columns: the least squares solution of x * b = a
+    const Matrix<float, 1, 2> c{{1, 1}};
+    const Matrix<float, 1, 2> d{{2, 4}};
+    const Matrix<float, 1, 1> y = d / c;
+    EXPECT_NEAR(y(0, 0), 3.0f, 1e-6f);
+
+    // scalar division by a column vector
+    const Matrix<float, 1, 3> z = 9.0f / b;
+    EXPECT_NEAR(z(0, 0), 1.0f, 1e-6f);
+    EXPECT_NEAR(z(0, 1), 2.0f, 1e-6f);
+    EXPECT_NEAR(z(0, 2), 2.0f, 1e-6f);
+}
+
 TEST(LinearAlgebraTyped, UnitVector)
 {
     using namespace mp_units::si::unit_symbols;

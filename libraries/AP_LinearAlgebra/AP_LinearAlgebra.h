@@ -149,18 +149,43 @@ struct Matrix {
     }
 
     /*
-      right division a / b = a * inverse(b) for square b, computed by
-      solving transpose(b) * transpose(x) = transpose(a) with Gaussian
-      elimination and partial pivoting. A singular b gives non-finite
-      elements.
+      right division x = a / b, the solution of x * b = a, as in Eigen:
+      for a square b this is a * inverse(b); otherwise the minimum norm
+      (more rows than columns) or least squares (fewer rows) solution. Typed
+      matrix libraries form, for example, a state vector divided by a state
+      vector to get the type of a transition matrix. A rank deficient b gives
+      non-finite elements.
      */
-    friend constexpr Matrix operator/(const Matrix &a, const Matrix<T, C, C> &b)
+    template <size_t N>
+    friend constexpr Matrix<T, R, N> operator/(const Matrix &a, const Matrix<T, N, C> &b)
     {
-        Matrix<T, C, C> m = b.transpose();
-        Matrix<T, C, R> x = a.transpose();
-        for (size_t col = 0; col < C; col++) {
+        if constexpr (N == C) {
+            return solve_right(a, b);
+        } else if constexpr (N > C) {
+            return solve_right(a, b.transpose() * b) * b.transpose();
+        } else {
+            return solve_right(a * b.transpose(), b * b.transpose());
+        }
+    }
+
+    // scalar s / b: the row vector x solving x * b = s, for a column vector b
+    friend constexpr Matrix<T, 1, R> operator/(const T &s, const Matrix &b)
+        requires (C == 1)
+    {
+        return Matrix<T, 1, 1>{{s}} / b;
+    }
+
+private:
+    // x * b = a for a square b, by Gaussian elimination with partial pivoting
+    template <size_t RA, size_t K>
+    static constexpr Matrix<T, RA, K> solve_right(const Matrix<T, RA, K> &a, const Matrix<T, K, K> &b)
+    {
+        // solve transpose(b) * transpose(x) = transpose(a)
+        Matrix<T, K, K> m = b.transpose();
+        Matrix<T, K, RA> x = a.transpose();
+        for (size_t col = 0; col < K; col++) {
             size_t pivot = col;
-            for (size_t i = col + 1; i < C; i++) {
+            for (size_t i = col + 1; i < K; i++) {
                 const T candidate = m(i, col) < T(0) ? -m(i, col) : m(i, col);
                 const T best = m(pivot, col) < T(0) ? -m(pivot, col) : m(pivot, col);
                 if (candidate > best) {
@@ -168,31 +193,31 @@ struct Matrix {
                 }
             }
             if (pivot != col) {
-                for (size_t j = 0; j < C; j++) {
+                for (size_t j = 0; j < K; j++) {
                     const T t = m(col, j);
                     m(col, j) = m(pivot, j);
                     m(pivot, j) = t;
                 }
-                for (size_t j = 0; j < R; j++) {
+                for (size_t j = 0; j < RA; j++) {
                     const T t = x(col, j);
                     x(col, j) = x(pivot, j);
                     x(pivot, j) = t;
                 }
             }
-            for (size_t i = col + 1; i < C; i++) {
+            for (size_t i = col + 1; i < K; i++) {
                 const T factor = m(i, col) / m(col, col);
-                for (size_t j = col; j < C; j++) {
+                for (size_t j = col; j < K; j++) {
                     m(i, j) -= factor * m(col, j);
                 }
-                for (size_t j = 0; j < R; j++) {
+                for (size_t j = 0; j < RA; j++) {
                     x(i, j) -= factor * x(col, j);
                 }
             }
         }
-        for (size_t col = C; col-- > 0;) {
-            for (size_t j = 0; j < R; j++) {
+        for (size_t col = K; col-- > 0;) {
+            for (size_t j = 0; j < RA; j++) {
                 T sum = x(col, j);
-                for (size_t k = col + 1; k < C; k++) {
+                for (size_t k = col + 1; k < K; k++) {
                     sum -= m(col, k) * x(k, j);
                 }
                 x(col, j) = sum / m(col, col);
