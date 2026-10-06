@@ -21,7 +21,7 @@ public:
     bool get_polynomial(vtype res[order]) const;
 
 private:
-    xtype mat[order][order];
-    vtype vec[order];
+    xtype mat[order][order] {};
+    vtype vec[order] {};
 };
 
