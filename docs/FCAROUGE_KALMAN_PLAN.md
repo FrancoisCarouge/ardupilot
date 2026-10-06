@@ -259,10 +259,11 @@ g++-15). GCC 14 is therefore the floor for every target.
 | `Copter.EKFYawResetLogged` | pass |
 
 `SoaringClimbRate` fails with "VFR_HUD.climb diverged from SIM_STATE.vd by 29.4 m/s" as soon as soaring is
-enabled, and identically (29.2 m/s) with gnu++11 on the same compiler: pre-existing on this branch, not
-caused by the standard. It is in the soaring climb-rate path that Phase 5 touches, so it must be
-understood (and fixed or reported upstream) before the soaring EKF replacement, otherwise that test
-cannot validate the pilot.
+enabled, identically (29.2 m/s) with gnu++11. Resolved (2026-10-06): upstream added this test to reproduce a
+known bug ("autotest: reproduce soaring climb rate reporting bug", f37bd41530, 2025-07-22) and lists it in
+`disabled_tests` ("very bad sink rate"); running it by name bypasses that list. The bug is in the
+total-energy variometer reading reported as `VFR_HUD.climb`, not in the soaring EKF, so it does not block
+the Phase 5 pilot, which is validated with `Soaring`.
 
 ### Other targets
 
