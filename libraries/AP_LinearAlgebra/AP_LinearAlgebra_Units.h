@@ -39,5 +39,9 @@ using Radians = Quantity<mp_units::si::radian>;
 using RadiansPerSecond = Quantity<mp_units::si::radian / mp_units::si::second>;
 using Seconds = Quantity<mp_units::si::second>;
 
+// the unit of ArduPilot's magnetic field measurements
+inline constexpr struct milligauss final : mp_units::named_unit<"mG", mp_units::mag_power<10, -7> * mp_units::si::tesla> {} milligauss;
+using Milligauss = Quantity<milligauss>;
+
 } // namespace Units
 } // namespace AP_LinearAlgebra
