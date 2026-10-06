@@ -490,6 +490,29 @@ Port (branch `fcarouge-compasscal-typed`, parked on F30 like the accelerometer f
 - Environment: the autotest needs pymavlink 2.4.50 (`MAG_CAL_FAILED_RESIDUALS_HIGH`); 2.4.49 fails it on
   the baseline too.
 
+### IMU temperature calibration polynomial fit (`PolyFit`)
+
+A lurking heterogeneous system: the moments `mat[i][j]` = sum x^(6-i-j) and sums `vec[i]` = sum y x^(3-i)
+of the normal equations, and the coefficients in y/x^(3-i), all untyped.
+
+- Baseline test first, on `fcarouge`: `AP_Math/tests/test_polyfit.cpp` (exact cubic recovered; three
+  temperatures rejected).
+- Port (branch `fcarouge-polyfit-typed`, parked on F30): x and y get dimensions of their own (`PolyFit`
+  knows neither unit), the accumulation `M += t * transpose(t)`, `S += t * transpose(y)` and the solve are
+  typed, `mat`/`vec` stay untyped storage in the header (value initialized now) so that the header does not
+  include TypedLinearAlgebra.
+- Singularity: elimination with partial pivoting left a 1e-14 pivot for three temperatures, accepting a
+  rank-deficient fit; the 4x4 `mat_inverse` it replaces compared the determinant, in x^12, with
+  FLT_EPSILON, a unit-dependent test. `AP_LinearAlgebra` gains `solve_right_positive_definite()` (Cholesky,
+  in place, each pivot compared with the diagonal element of the same unit) and the typed
+  `divide_positive_definite()`, which also checks the type consistency that TypedLinearAlgebra's division
+  does not (F32). Candidate for the compass and accelerometer fits too (in place, less stack, normal
+  matrices).
+- `-fsingle-precision-constant` makes `1000.0` a float: TypedLinearAlgebra's mp-units plug-in rightly
+  rejects storing it in a double matrix; double tests go in `DOUBLE_PRECISION_SOURCES`.
+- Results: `test_polyfit` and `test_linear_algebra` pass (g++ 15); `Plane.IMUTempCal` passes on the
+  baseline and on the port. Not yet done: firmware builds (size, stack), clang 20.
+
 ### Parked work (local branches, not pushed)
 
 | Branch | Content | Waiting for |
@@ -497,3 +520,19 @@ Port (branch `fcarouge-compasscal-typed`, parked on F30 like the accelerometer f
 | `fcarouge-soaring-pilot` | Kalman-based `AP_Soaring` thermal EKF | Kalman F2 (`<print>`) and F1 (heap callables) fixed upstream |
 | `fcarouge-accelcal-typed` | TypedLinearAlgebra accelerometer calibration fit | TypedLinearAlgebra F30 (current libc++) fixed upstream |
 | `fcarouge-compasscal-typed` | Milligauss unit; TypedLinearAlgebra compass calibration sphere and ellipsoid fits | TypedLinearAlgebra F30 (current libc++) fixed upstream |
+| `fcarouge-polyfit-typed` | Positive definite typed division; TypedLinearAlgebra IMU temperature calibration polynomial fit | TypedLinearAlgebra F30 fixed upstream; firmware builds and clang to check |
+
+### Resuming (paused 2026-10-06 while the FrancoisCarouge findings are resolved)
+
+1. Bump `modules/Kalman`, `modules/TypedLinearAlgebra` (and `modules/mp-units` if needed) to the fixed
+   upstream commits, one commit each; rebuild SITL, the unit tests, CubeOrange and MatekF405; check the
+   WebAssembly build (F30) locally with emsdk 4.0.20.
+2. Mark the resolved findings in `FCAROUGE_FINDINGS.md`; remove workarounds they make unnecessary
+   (in-place accumulation for F28, `ElementType` dispatch for F20, consistency check for F32).
+3. Rebase each parked branch onto `fcarouge`, re-run its validation (logged above), then fold it in:
+   soaring pilot (F1, F2), accelerometer fit, compass fits, polynomial fit.
+4. Continue the inventory: kinematic shaping triplets, SCurve, then PrecLand, Airspeed, EKFGSF, EKF2/EKF3.
+5. Rebase onto the fork's `master` and watch PR 3 CI.
+
+Environment notes: waf builds the directory of the last `configure` (its lock file), whatever `--out`
+says, so configure before switching build directories; the SITL autotests need pymavlink 2.4.50.
