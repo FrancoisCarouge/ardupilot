@@ -16,10 +16,6 @@
 #include "AccelCalibrator.h"
 #include <stdio.h>
 #include <AP_HAL/AP_HAL.h>
-#include <AP_LinearAlgebra/AP_LinearAlgebra.h>
-#include <AP_LinearAlgebra/AP_LinearAlgebra_Units.h>
-
-#include <type_traits>
 
 const extern AP_HAL::HAL& hal;
 /*
@@ -76,9 +72,9 @@ void AccelCalibrator::start(enum accel_cal_fit_type_t fit_type, uint8_t num_samp
     const float theta = 0.5f * acosf(cosf(a) / (1.0f - cosf(a)));
     _min_sample_dist = GRAVITY_MSS * 2*sinf(theta/2);
 
-    _param.offset = offset;
-    _param.diag = diag;
-    _param.offdiag = offdiag;
+    _param.s.offset = offset;
+    _param.s.diag = diag;
+    _param.s.offdiag = offdiag;
 
     switch (_conf_fit_type) {
         case ACCEL_CAL_AXIS_ALIGNED_ELLIPSOID:
@@ -155,12 +151,12 @@ void AccelCalibrator::new_sample(const Vector3f& delta_velocity, float dt) {
 
 // determines if the result is acceptable
 bool AccelCalibrator::accept_result() const {
-    if (fabsf(_param.offset.x) > GRAVITY_MSS ||
-        fabsf(_param.offset.y) > GRAVITY_MSS ||
-        fabsf(_param.offset.z) > GRAVITY_MSS ||
-        _param.diag.x < 0.8f || _param.diag.x > 1.2f ||
-        _param.diag.y < 0.8f || _param.diag.y > 1.2f ||
-        _param.diag.z < 0.8f || _param.diag.z > 1.2f) {
+    if (fabsf(_param.s.offset.x) > GRAVITY_MSS ||
+        fabsf(_param.s.offset.y) > GRAVITY_MSS ||
+        fabsf(_param.s.offset.z) > GRAVITY_MSS ||
+        _param.s.diag.x < 0.8f || _param.s.diag.x > 1.2f ||
+        _param.s.diag.y < 0.8f || _param.s.diag.y > 1.2f ||
+        _param.s.diag.z < 0.8f || _param.s.diag.z > 1.2f) {
         return false;
     } else {
         return true;
@@ -185,12 +181,12 @@ bool AccelCalibrator::get_sample_corrected(uint8_t i, Vector3f& s) const {
     }
 
     Matrix3f M (
-        _param.diag.x    , _param.offdiag.x , _param.offdiag.y,
-        _param.offdiag.x , _param.diag.y    , _param.offdiag.z,
-        _param.offdiag.y , _param.offdiag.z , _param.diag.z
+        _param.s.diag.x    , _param.s.offdiag.x , _param.s.offdiag.y,
+        _param.s.offdiag.x , _param.s.diag.y    , _param.s.offdiag.z,
+        _param.s.offdiag.y , _param.s.offdiag.z , _param.s.diag.z
     );
 
-    s = M*(s+_param.offset);
+    s = M*(s+_param.s.offset);
 
     return true;
 }
@@ -205,20 +201,20 @@ void AccelCalibrator::check_for_timeout() {
 
 // returns spherical fit parameters
 void AccelCalibrator::get_calibration(Vector3f& offset) const {
-    offset = -_param.offset;
+    offset = -_param.s.offset;
 }
 
 // returns axis aligned ellipsoidal fit parameters
 void AccelCalibrator::get_calibration(Vector3f& offset, Vector3f& diag) const {
-    offset = -_param.offset;
-    diag = _param.diag;
+    offset = -_param.s.offset;
+    diag = _param.s.diag;
 }
 
 // returns generic ellipsoidal fit parameters
 void AccelCalibrator::get_calibration(Vector3f& offset, Vector3f& diag, Vector3f& offdiag) const {
-    offset = -_param.offset;
-    diag = _param.diag;
-    offdiag = _param.offdiag;
+    offset = -_param.s.offset;
+    diag = _param.s.diag;
+    offdiag = _param.s.offdiag;
 }
 
 /////////////////////////////////////////////////////////////
@@ -327,171 +323,49 @@ void AccelCalibrator::set_status(enum accel_cal_status_t status) {
     Run Gauss Newton fitting algorithm over the sample space and come up with offsets, diagonal/scale factors
     and crosstalk/offdiagonal parameters
 */
-namespace {
-
-using AP_LinearAlgebra::ColumnVector;
-using AP_LinearAlgebra::RowVector;
-using AP_LinearAlgebra::Units::MetresPerSecondSquared;
-using AP_LinearAlgebra::Units::Unitless;
-
-constexpr auto metres_per_second_squared = mp_units::si::metre / mp_units::si::second / mp_units::si::second;
-
-/*
-  the fitted parameters: offsets (m/s/s), diagonal and, for an ellipsoid,
-  off-diagonal scale factors (unitless); and the Jacobian, the partial
-  derivatives of a residual (m/s/s) with respect to them
- */
-template <uint8_t N> struct Fit;
-
-template <> struct Fit<6> {
-    using Params = ColumnVector<float,
-                                MetresPerSecondSquared, MetresPerSecondSquared, MetresPerSecondSquared,
-                                Unitless, Unitless, Unitless>;
-    using Jacobian = RowVector<float,
-                               Unitless, Unitless, Unitless,
-                               MetresPerSecondSquared, MetresPerSecondSquared, MetresPerSecondSquared>;
-
-    static Params params(const AccelCalibrator::param_t &p)
-    {
-        const auto a = metres_per_second_squared;
-        const auto u = mp_units::one;
-        return Params{p.offset.x * a, p.offset.y * a, p.offset.z * a,
-                      p.diag.x * u, p.diag.y * u, p.diag.z * u};
-    }
-    static void set(AccelCalibrator::param_t &p, const Params &x)
-    {
-        const auto a = metres_per_second_squared;
-        const auto u = mp_units::one;
-        p.offset = Vector3f(x.at<0>().numerical_value_in(a), x.at<1>().numerical_value_in(a), x.at<2>().numerical_value_in(a));
-        p.diag = Vector3f(x.at<3>().numerical_value_in(u), x.at<4>().numerical_value_in(u), x.at<5>().numerical_value_in(u));
-    }
-    static Jacobian jacobian(const float j[])
-    {
-        const auto a = metres_per_second_squared;
-        const auto u = mp_units::one;
-        return Jacobian{j[0] * u, j[1] * u, j[2] * u, j[3] * a, j[4] * a, j[5] * a};
-    }
-};
-
-template <> struct Fit<9> {
-    using Params = ColumnVector<float,
-                                MetresPerSecondSquared, MetresPerSecondSquared, MetresPerSecondSquared,
-                                Unitless, Unitless, Unitless,
-                                Unitless, Unitless, Unitless>;
-    using Jacobian = RowVector<float,
-                               Unitless, Unitless, Unitless,
-                               MetresPerSecondSquared, MetresPerSecondSquared, MetresPerSecondSquared,
-                               MetresPerSecondSquared, MetresPerSecondSquared, MetresPerSecondSquared>;
-
-    static Params params(const AccelCalibrator::param_t &p)
-    {
-        const auto a = metres_per_second_squared;
-        const auto u = mp_units::one;
-        return Params{p.offset.x * a, p.offset.y * a, p.offset.z * a,
-                      p.diag.x * u, p.diag.y * u, p.diag.z * u,
-                      p.offdiag.x * u, p.offdiag.y * u, p.offdiag.z * u};
-    }
-    static void set(AccelCalibrator::param_t &p, const Params &x)
-    {
-        const auto a = metres_per_second_squared;
-        const auto u = mp_units::one;
-        p.offset = Vector3f(x.at<0>().numerical_value_in(a), x.at<1>().numerical_value_in(a), x.at<2>().numerical_value_in(a));
-        p.diag = Vector3f(x.at<3>().numerical_value_in(u), x.at<4>().numerical_value_in(u), x.at<5>().numerical_value_in(u));
-        p.offdiag = Vector3f(x.at<6>().numerical_value_in(u), x.at<7>().numerical_value_in(u), x.at<8>().numerical_value_in(u));
-    }
-    static Jacobian jacobian(const float j[])
-    {
-        const auto a = metres_per_second_squared;
-        const auto u = mp_units::one;
-        return Jacobian{j[0] * u, j[1] * u, j[2] * u, j[3] * a, j[4] * a, j[5] * a, j[6] * a, j[7] * a, j[8] * a};
-    }
-};
-
-/*
-  the normal equations and their solution are kept out of run_fit_typed():
-  typed matrix operations return values, and these temporaries would
-  otherwise add up in a single stack frame
- */
-template <typename NormalMatrix, typename Jacobian>
-NOINLINE void accumulate(NormalMatrix &JTJ, const Jacobian &J)
-{
-    // JTJ = JTJ + transpose(J) * J, with the units checked on the typed
-    // expression and the elements added in place: the typed expression
-    // copies the whole matrix at each operation, too much stack on a
-    // microcontroller
-    static_assert(std::is_same_v<decltype(JTJ + fcarouge::transposed(J) * J), NormalMatrix>);
-    auto &jtj = JTJ.data();
-    const auto &j = J.data();
-    for (size_t row = 0; row < NormalMatrix::rows; row++) {
-        for (size_t col = 0; col < NormalMatrix::columns; col++) {
-            jtj(row, col) += j(row) * j(col);
-        }
-    }
-}
-
-template <typename NormalVector, typename Jacobian>
-NOINLINE void accumulate(NormalVector &JTFI, const Jacobian &J, const MetresPerSecondSquared &residual)
-{
-    JTFI = JTFI + fcarouge::transposed(J) * residual;
-}
-
-// Gauss Newton step: solve JTJ * delta = JTFI, JTJ being symmetric; a
-// singular JTJ gives non-finite parameters
-template <typename Params, typename NormalMatrix, typename NormalVector>
-NOINLINE Params solve(const NormalMatrix &JTJ, const NormalVector &JTFI)
-{
-    return fcarouge::transposed(fcarouge::transposed(JTFI) / JTJ);
-}
-
-} // namespace
-
 void AccelCalibrator::run_fit(uint8_t max_iterations, float& fitness)
 {
-    if (get_num_params() == 9) {
-        run_fit_typed<9>(max_iterations, fitness);
-    } else {
-        run_fit_typed<6>(max_iterations, fitness);
-    }
-}
-
-template <uint8_t N>
-void AccelCalibrator::run_fit_typed(uint8_t max_iterations, float& fitness)
-{
-    using Params = typename Fit<N>::Params;
-    using Jacobian = typename Fit<N>::Jacobian;
-    using NormalMatrix = decltype(fcarouge::transposed(Jacobian{}) * Jacobian{});
-    using NormalVector = decltype(fcarouge::transposed(Jacobian{}) * MetresPerSecondSquared{});
-
     if (_sample_buffer == nullptr) {
         return;
     }
-    fitness = calc_mean_squared_residuals(_param);
+    fitness = calc_mean_squared_residuals(_param.s);
     float min_fitness = fitness;
-    struct param_t fit_param = _param;
+    union param_u fit_param = _param;
     uint8_t num_iterations = 0;
 
     while(num_iterations < max_iterations) {
-        NormalMatrix JTJ{};
-        NormalVector JTFI{};
+        float JTJ[ACCEL_CAL_MAX_NUM_PARAMS*ACCEL_CAL_MAX_NUM_PARAMS] {};
+        VectorP JTFI;
 
         for(uint16_t k = 0; k<_samples_collected; k++) {
             Vector3f sample;
             get_sample(k, sample);
 
-            float jacob[ACCEL_CAL_MAX_NUM_PARAMS] {};
-            calc_jacob(sample, fit_param, jacob);
-            const Jacobian J = Fit<N>::jacobian(jacob);
-            const MetresPerSecondSquared residual = calc_residual(sample, fit_param) * metres_per_second_squared;
+            VectorN<float,ACCEL_CAL_MAX_NUM_PARAMS> jacob;
 
-            accumulate(JTJ, J);
-            accumulate(JTFI, J, residual);
+            calc_jacob(sample, fit_param.s, jacob);
+
+            for(uint8_t i = 0; i < get_num_params(); i++) {
+                // compute JTJ
+                for(uint8_t j = 0; j < get_num_params(); j++) {
+                    JTJ[i*get_num_params()+j] += jacob[i] * jacob[j];
+                }
+                // compute JTFI
+                JTFI[i] += jacob[i] * calc_residual(sample, fit_param.s);
+            }
         }
 
-        // a singular JTJ gives non-finite parameters, rejected below
-        const Params delta = solve<Params>(JTJ, JTFI);
-        Fit<N>::set(fit_param, Fit<N>::params(fit_param) - delta);
+        if (!mat_inverse(JTJ, JTJ, get_num_params())) {
+            return;
+        }
 
-        fitness = calc_mean_squared_residuals(fit_param);
+        for(uint8_t row=0; row < get_num_params(); row++) {
+            for(uint8_t col=0; col < get_num_params(); col++) {
+                fit_param.a[row] -= JTFI[col] * JTJ[row*get_num_params()+col];
+            }
+        }
+
+        fitness = calc_mean_squared_residuals(fit_param.s);
 
         if (isnan(fitness) || isinf(fitness)) {
             return;
@@ -537,7 +411,7 @@ float AccelCalibrator::calc_mean_squared_residuals(const struct param_t& params)
 
 // calculate jacobian, a matrix that defines relation to variation in fitness with variation in each of the parameters
 // this is used in LSq estimator to adjust variation in parameter to be used for next iteration of LSq
-void AccelCalibrator::calc_jacob(const Vector3f& sample, const struct param_t& params, float ret[ACCEL_CAL_MAX_NUM_PARAMS]) const {
+void AccelCalibrator::calc_jacob(const Vector3f& sample, const struct param_t& params, VectorP &ret) const {
     switch (_conf_fit_type) {
         case ACCEL_CAL_AXIS_ALIGNED_ELLIPSOID:
         case ACCEL_CAL_ELLIPSOID: {
