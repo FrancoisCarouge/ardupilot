@@ -22,7 +22,9 @@
  */
 #pragma once
 
+#include "AP_LinearAlgebra_MathsMacrosPush.h"
 #include <fcarouge/kalman.hpp>
+#include "AP_LinearAlgebra_MathsMacrosPop.h"
 
 #include "AP_LinearAlgebra.h"
 #include "AP_LinearAlgebra_Units.h"
