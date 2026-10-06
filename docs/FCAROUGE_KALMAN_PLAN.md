@@ -470,9 +470,30 @@ First full CI run (2026-10-06): 87 jobs passed, 32 failed. Causes and fixes:
   flagged for human review, as it alters calibration behaviour.
 - Validation: autotests `Copter.FixedYawCalibration` then `Copter.SITLCompassCalibration`.
 
+Port (branch `fcarouge-compasscal-typed`, parked on F30 like the accelerometer fit):
+
+- `AP_LinearAlgebra` gains a `milligauss` unit (1e-7 T): mp-units has the gauss only in its high energy
+  physics system.
+- One Levenberg-Marquardt iteration, `run_fit<Fit>(lambda)`, replaces both fits. `SphereFit` (radius and
+  offsets in mGauss, unitless Jacobian) and `EllipsoidFit` (offsets in mGauss, unitless scale factors;
+  Jacobian unitless then mGauss) convert to and from `param_t`; the `float *` views are removed.
+- The damping is kept as it was, added in place to each diagonal element and documented as unit
+  inconsistent for the ellipsoid. A singular `JTJ` (non-finite step) leaves parameters and lambda unchanged,
+  as `mat_inverse` failing did.
+- Stack: the typed solve works on the stack where `mat_inverse` allocated on the heap. Copying `JTJ` for
+  the second damped step peaked at 1608 B of the 2048 B `compasscal` thread; damping `JTJ` in place twice
+  (lambda/10, then up to lambda) brings the ellipsoid fit to 1280 B (`run_fit` 648, `solve` 208,
+  `solve_right` 424), from about 1000 B before. A `solve_right` that factors in place would save more.
+- Results: both autotests pass on g++ 15 SITL; in two runs the fitted offsets stay within 0.01 mGauss of
+  the simulated ones (baseline 0.013) with the same fitness range (0.034 to 0.039) and scale factors.
+  CubeOrange and MatekF405 copter build with `-Werror`, 2.4 kB larger.
+- Environment: the autotest needs pymavlink 2.4.50 (`MAG_CAL_FAILED_RESIDUALS_HIGH`); 2.4.49 fails it on
+  the baseline too.
+
 ### Parked work (local branches, not pushed)
 
 | Branch | Content | Waiting for |
 |---|---|---|
 | `fcarouge-soaring-pilot` | Kalman-based `AP_Soaring` thermal EKF | Kalman F2 (`<print>`) and F1 (heap callables) fixed upstream |
 | `fcarouge-accelcal-typed` | TypedLinearAlgebra accelerometer calibration fit | TypedLinearAlgebra F30 (current libc++) fixed upstream |
+| `fcarouge-compasscal-typed` | Milligauss unit; TypedLinearAlgebra compass calibration sphere and ellipsoid fits | TypedLinearAlgebra F30 (current libc++) fixed upstream |
