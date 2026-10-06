@@ -20,6 +20,13 @@ inputs:
     description: Install g++-14-multilib for 32-bit native builds.
     required: false
     default: 'false'
+  musl:
+    description: >
+      Install the Bootlin armv7-eabihf musl toolchain (GCC 15) as
+      /opt/arm-linux-musleabihf-15 with arm-linux-musleabihf-* names, and add
+      it to PATH.
+    required: false
+    default: 'false'
   cross:
     description: >
       Space-separated GCC cross toolchain prefixes to install at version 14,
@@ -88,3 +95,38 @@ runs:
       if: inputs.arm == 'true'
       shell: bash
       run: echo "/opt/gcc-arm-none-eabi-15/bin" >> "$GITHUB_PATH"
+
+    - name: restore musl toolchain
+      if: inputs.musl == 'true'
+      id: musl-cache
+      uses: actions/cache@v5
+      with:
+        path: /opt/arm-linux-musleabihf-15
+        key: bootlin-armv7-eabihf--musl--stable-2026.08-1
+
+    - name: install musl toolchain
+      if: inputs.musl == 'true' && steps.musl-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        SUDO=""
+        if [ "$(id -u)" -ne 0 ]; then
+            SUDO="sudo"
+        fi
+        MUSL_ROOT="armv7-eabihf--musl--stable-2026.08-1"
+        MUSL_SHA256="9147bafae4aa272321a3c6440d04d83b7e23411b2d344f875541d84c4444ba9b"
+        wget -q "https://toolchains.bootlin.com/downloads/releases/toolchains/armv7-eabihf/tarballs/$MUSL_ROOT.tar.xz"
+        echo "$MUSL_SHA256  $MUSL_ROOT.tar.xz" | sha256sum -c -
+        $SUDO tar xJf "$MUSL_ROOT.tar.xz" -C /opt
+        $SUDO mv "/opt/$MUSL_ROOT" /opt/arm-linux-musleabihf-15
+        rm "$MUSL_ROOT.tar.xz"
+        # the Buildroot wrappers run <name>.br_real from their own directory,
+        # so the waf toolchain names must live next to them
+        cd /opt/arm-linux-musleabihf-15/bin
+        for f in arm-buildroot-linux-musleabihf-*; do
+            $SUDO ln -sf "$f" "${f/arm-buildroot-linux-musleabihf/arm-linux-musleabihf}"
+        done
+
+    - name: add musl toolchain to PATH
+      if: inputs.musl == 'true'
+      shell: bash
+      run: echo "/opt/arm-linux-musleabihf-15/bin" >> "$GITHUB_PATH"
