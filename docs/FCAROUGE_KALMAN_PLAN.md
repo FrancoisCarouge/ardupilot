@@ -438,3 +438,18 @@ First full CI run (2026-10-06): 87 jobs passed, 32 failed. Causes and fixes:
   once, on the first `reset()` (first thermal), because Kalman allocates its callables (F1); owner review
   requested.
 - Blocked on ChibiOS by F2: the soaring changes are kept local until Kalman no longer requires `<print>`.
+
+## Phase 6 log
+
+### AP_AccelCal (first TypedLinearAlgebra-only replacement)
+
+- New test `libraries/AP_AccelCal/tests/test_accel_calibrator.cpp`: synthetic samples from a sensor with known
+  offsets, scale and cross-axis errors (6 and 12 orientations); passes on the original code and on the typed
+  one (offsets within 1e-3 m/s/s, scale factors within 1e-4).
+- The union of `param_t` and `VectorN<float, 9>` (type punning) is gone; the Gauss-Newton fit uses typed
+  parameters `[offset m/s/s x3, diag x3 (, offdiag x3)]`, Jacobian, `JTJ`, `JTFI` and a typed division for the
+  step. A deliberate unit mistake fails to compile (F27 for the message).
+- Firmware: CubeOrange and MatekF405 copter build with `-Werror`, +2.4 kB flash, no RAM change. Two
+  frictions fixed in ArduPilot: maths macros versus `<chrono>` (F29, macro push/pop in `AP_LinearAlgebra`),
+  and stack frame size (F28, in-place accumulation with a type-checked unevaluated expression).
+- Lesson for the soaring pilot: `std::exp` is also a macro victim on F4 boards; use `expf`.
