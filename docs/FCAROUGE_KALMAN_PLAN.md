@@ -453,3 +453,13 @@ First full CI run (2026-10-06): 87 jobs passed, 32 failed. Causes and fixes:
   frictions fixed in ArduPilot: maths macros versus `<chrono>` (F29, macro push/pop in `AP_LinearAlgebra`),
   and stack frame size (F28, in-place accumulation with a type-checked unevaluated expression).
 - Lesson for the soaring pilot: `std::exp` is also a macro victim on F4 boards; use `expf`.
+- Backed out of `fcarouge` (revert commit) because TypedLinearAlgebra does not build with current libc++,
+  which broke the WebAssembly CI (F30); kept on the local branch `fcarouge-accelcal-typed`, to re-apply after
+  the upstream fix. The calibrator tests and the maths macro guard stay on `fcarouge`.
+
+### Parked work (local branches, not pushed)
+
+| Branch | Content | Waiting for |
+|---|---|---|
+| `fcarouge-soaring-pilot` | Kalman-based `AP_Soaring` thermal EKF | Kalman F2 (`<print>`) and F1 (heap callables) fixed upstream |
+| `fcarouge-accelcal-typed` | TypedLinearAlgebra accelerometer calibration fit | TypedLinearAlgebra F30 (current libc++) fixed upstream |
