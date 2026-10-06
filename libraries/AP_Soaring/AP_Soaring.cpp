@@ -266,14 +266,10 @@ void SoaringController::init_thermalling()
                              cov_q2,
                              cov_q2};
 
-    const MatrixN<float,4> q{init_q};
-
     const float init_p[4] = {INITIAL_STRENGTH_COVARIANCE,
                              INITIAL_RADIUS_COVARIANCE,
                              INITIAL_POSITION_COVARIANCE,
                              INITIAL_POSITION_COVARIANCE};
-
-    const MatrixN<float,4> p{init_p};
 
     Vector3f position;
 
@@ -288,10 +284,8 @@ void SoaringController::init_thermalling()
                               position.x + thermal_distance_ahead * cosf(_ahrs.get_yaw_rad()),
                               position.y + thermal_distance_ahead * sinf(_ahrs.get_yaw_rad())};
 
-    const VectorN<float,4> xr{init_xr};
-
     // Also reset covariance matrix p so filter is not affected by previous data
-    _ekf.reset(xr, p, q, r);
+    _ekf.reset(init_xr, init_p, init_q, r);
 
     _prev_update_time = AP_HAL::micros64();
     _thermal_start_time_us = AP_HAL::micros64();
