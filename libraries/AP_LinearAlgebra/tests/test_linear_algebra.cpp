@@ -107,6 +107,65 @@ TEST(LinearAlgebraMatrix, NonSquareDivision)
     EXPECT_NEAR(z(0, 2), 2.0f, 1e-6f);
 }
 
+TEST(LinearAlgebraMatrix, PositiveDefiniteDivision)
+{
+    const Matrix<double, 3, 3> b{{4, 2, 1,
+                                  2, 5, 3,
+                                  1, 3, 6}};
+    const Matrix<double, 2, 3> a{{1, 2, 3,
+                                  -1, 0, 4}};
+    Matrix<double, 2, 3> x = a;
+    Matrix<double, 3, 3> factors = b;
+    ASSERT_TRUE(AP_LinearAlgebra::solve_right_positive_definite(x, factors));
+    const Matrix<double, 2, 3> back = x * b;
+    for (size_t k = 0; k < 6; k++) {
+        EXPECT_NEAR(back.v[k], a.v[k], 1e-12);
+    }
+
+    // singular: the third row is the sum of the first two, even when
+    // rounding leaves a tiny pivot rather than zero
+    Matrix<double, 3, 3> singular{{1, 0.1, 1.1,
+                                   0.1, 1, 1.1,
+                                   1.1, 1.1, 2.2}};
+    x = a;
+    EXPECT_FALSE(AP_LinearAlgebra::solve_right_positive_definite(x, singular));
+
+    // indefinite
+    Matrix<double, 2, 2> indefinite{{1, 2,
+                                     2, 1}};
+    Matrix<double, 1, 2> y{{1, 1}};
+    EXPECT_FALSE(AP_LinearAlgebra::solve_right_positive_definite(y, indefinite));
+}
+
+TEST(LinearAlgebraTyped, PositiveDefiniteDivision)
+{
+    using namespace mp_units::si::unit_symbols;
+    using Metres = mp_units::quantity<m, double>;
+    using Seconds = mp_units::quantity<s, double>;
+    using Terms = AP_LinearAlgebra::ColumnVector<double, Metres, Seconds>;
+    using Row = AP_LinearAlgebra::RowVector<double, Metres, Seconds>;
+
+    // a normal matrix sum(t * transpose(t)), of elements in m^2, m*s and s^2
+    // of very different magnitudes
+    const Terms t1{1000.0 * m, 0.001 * s};
+    const Terms t2{2000.0 * m, 0.003 * s};
+    const auto normal = t1 * fcarouge::transposed(t1) + t2 * fcarouge::transposed(t2);
+    const Row rhs{1.0 * m, 2.0 * s};
+
+    // x * normal = a: x is in 1/m and 1/s
+    decltype(rhs / normal) x;
+    ASSERT_TRUE(AP_LinearAlgebra::divide_positive_definite(x, rhs, normal));
+    static_assert(std::remove_cvref_t<decltype(x.at<0>())>::unit == mp_units::one / m);
+    static_assert(std::remove_cvref_t<decltype(x.at<1>())>::unit == mp_units::one / s);
+    const Row back = x * normal;
+    EXPECT_NEAR(back.at<0>().numerical_value_in(m), 1.0, 1e-9);
+    EXPECT_NEAR(back.at<1>().numerical_value_in(s), 2.0, 1e-9);
+
+    // a single sample cannot determine two unknowns
+    const auto rank_one = t1 * fcarouge::transposed(t1);
+    EXPECT_FALSE(AP_LinearAlgebra::divide_positive_definite(x, rhs, rank_one));
+}
+
 TEST(LinearAlgebraTyped, UnitVector)
 {
     using namespace mp_units::si::unit_symbols;
