@@ -457,6 +457,19 @@ First full CI run (2026-10-06): 87 jobs passed, 32 failed. Causes and fixes:
   which broke the WebAssembly CI (F30); kept on the local branch `fcarouge-accelcal-typed`, to re-apply after
   the upstream fix. The calibrator tests and the maths macro guard stay on `fcarouge`.
 
+### CompassCalibrator: what typing exposes
+
+- `param_t` is reached through `float *` views (`get_sphere_params()`, `get_ellipsoid_params()`) that index
+  across struct members (`radius` then `offset`; `offset`, `diag`, `offdiag`), relying on their layout.
+- The Levenberg-Marquardt damping adds the same `_ellipsoid_lambda` to every diagonal element of the 9x9
+  `JTJ`, whose diagonal units are 1 for the offset rows and mGauss^2 for the scale rows: the damping assumes
+  1 = 1 mGauss^2, so the convergence depends on the field unit (working in Gauss would weaken the damping of
+  the scale terms by 1e6 relative to the offsets). The sphere fit (all unitless Jacobian) is consistent.
+  Marquardt's lambda * diag(JTJ) would be unit consistent. A typed port must make the assumption explicit
+  (TypedLinearAlgebra lacks the diagonal operations to express either form directly, F31). Not changed:
+  flagged for human review, as it alters calibration behaviour.
+- Validation: autotests `Copter.FixedYawCalibration` then `Copter.SITLCompassCalibration`.
+
 ### Parked work (local branches, not pushed)
 
 | Branch | Content | Waiting for |
