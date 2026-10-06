@@ -58,22 +58,34 @@ runs:
         for prefix in $SETUP_CROSS; do
             PKGS="$PKGS gcc-14-$prefix g++-14-$prefix"
         done
+        # installing compilers runs update-ccache-symlinks, which removes the
+        # images' own ccache links such as arm-none-eabi-g++: save them
+        CCACHE_LINKS=""
+        if [ -d /usr/lib/ccache ]; then
+            CCACHE_LINKS=$(ls /usr/lib/ccache)
+        fi
         $SUDO apt-get update -qq
         # releases without gcc-14 (Ubuntu 22.04, as in the ROS images) get it
-        # from the toolchain PPA
-        if ! apt-cache show gcc-14 > /dev/null 2>&1; then
+        # from the toolchain PPA, as does clang, which cannot use the
+        # std::forward_like of Ubuntu 24.04's libstdc++ 14.2 (fixed in 14.3)
+        if ! apt-cache show gcc-14 > /dev/null 2>&1 || [ "$SETUP_CLANG" = "true" ]; then
             $SUDO apt-get install -y --no-install-recommends software-properties-common gpg-agent
             $SUDO add-apt-repository -y ppa:ubuntu-toolchain-r/test
             $SUDO apt-get update -qq
         fi
         $SUDO apt-get install -y --no-install-recommends $PKGS
         if [ "$SETUP_CLANG" = "true" ]; then
+            $SUDO apt-get install -y --no-install-recommends libstdc++-14-dev
+        fi
+        if [ "$SETUP_CLANG" = "true" ]; then
             $SUDO ln -sf /usr/bin/clang-20 /usr/bin/clang
             $SUDO ln -sf /usr/bin/clang++-20 /usr/bin/clang++
         fi
-        # route the new compilers through ccache, keeping the image's own
-        # ccache links (update-ccache-symlinks would remove the cross ones)
+        # restore the saved ccache links and add ones for the new compilers
         if [ -d /usr/lib/ccache ]; then
+            for compiler in $CCACHE_LINKS; do
+                $SUDO ln -sf ../../bin/ccache "/usr/lib/ccache/$compiler"
+            done
             for compiler in gcc-14 g++-14 clang-20 clang++-20; do
                 if [ -x "/usr/bin/$compiler" ]; then
                     $SUDO ln -sf ../../bin/ccache "/usr/lib/ccache/$compiler"
