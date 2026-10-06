@@ -126,4 +126,15 @@ TEST(LinearAlgebraTyped, UnitVector)
     EXPECT_FLOAT_EQ(y.at<0>().numerical_value_in(cm), 400.0f);
 }
 
+TEST(LinearAlgebraTyped, Milligauss)
+{
+    using AP_LinearAlgebra::Units::milligauss;
+    using AP_LinearAlgebra::Units::Milligauss;
+
+    // the Earth's field is about 500 mGauss, 50 microtesla
+    const Milligauss field = 500.0f * milligauss;
+    EXPECT_FLOAT_EQ(field.numerical_value_in(milligauss), 500.0f);
+    EXPECT_FLOAT_EQ(field.numerical_value_in(mp_units::si::micro<mp_units::si::tesla>), 50.0f);
+}
+
 AP_GTEST_MAIN()
