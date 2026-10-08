@@ -441,8 +441,14 @@ First full CI run (2026-10-06): 87 jobs passed, 32 failed. Causes and fixes:
 - 2026-10-07, Kalman bumped to 2301ab7cd (F1 fixed): the pilot rebuilds unchanged; the filter object no
   longer references the throwing `operator new`/`delete`, its SITL object code drops from 70.9 kB to
   4.5 kB, and `Plane.Soaring` passes. The one allocation left is the pilot's own, on the first `reset()`,
-  which keeps the Kalman headers out of `AP_Soaring` (F22); it could become inline storage. Still blocked
-  on ChibiOS by F2 (`kalman.hpp` includes `<print>` unconditionally at 2301ab7cd).
+  which keeps the Kalman headers out of `AP_Soaring` (F22); it could become inline storage.
+- 2026-10-07, F2 worked around in ArduPilot: the ChibiOS placeholder `cstdio` declares `FILE`, `stdout`,
+  `EOF`, `fwrite`, `putc` (and `fputc`, `fflush`, `stderr`) bound to undefined symbols, so `<print>`
+  compiles, its unused inline functions are never emitted, and any call fails to link
+  (`ap_chibios_stdio_streams_are_not_supported_*`). The pilot then builds and links for CubeOrange and
+  MatekF405: +2460 B and +2452 B code, +104 B data against `fcarouge` (F21: was about 3 kB before F1).
+- Still parked: the WebAssembly Plane build (emscripten 6.0.8, as in CI) fails in `objs/AP_Soaring` on
+  libc++'s `<tuple>` (F30), as the accelerometer fit did.
 
 ## Phase 6 log
 
@@ -522,7 +528,7 @@ of the normal equations, and the coefficients in y/x^(3-i), all untyped.
 
 | Branch | Content | Waiting for |
 |---|---|---|
-| `fcarouge-soaring-pilot` | Kalman-based `AP_Soaring` thermal EKF | Kalman F2 (`<print>`) fixed upstream (F1 fixed in 2301ab7cd) |
+| `fcarouge-soaring-pilot` | Kalman-based `AP_Soaring` thermal EKF | TypedLinearAlgebra F30 (WebAssembly); F1 fixed upstream, F2 worked around |
 | `fcarouge-accelcal-typed` | TypedLinearAlgebra accelerometer calibration fit | TypedLinearAlgebra F30 (current libc++) fixed upstream |
 | `fcarouge-compasscal-typed` | Milligauss unit; TypedLinearAlgebra compass calibration sphere and ellipsoid fits | TypedLinearAlgebra F30 (current libc++) fixed upstream |
 | `fcarouge-polyfit-typed` | Positive definite typed division; TypedLinearAlgebra IMU temperature calibration polynomial fit | TypedLinearAlgebra F30 fixed upstream; firmware builds and clang to check |
