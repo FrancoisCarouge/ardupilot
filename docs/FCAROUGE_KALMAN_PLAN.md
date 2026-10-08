@@ -438,6 +438,11 @@ First full CI run (2026-10-06): 87 jobs passed, 32 failed. Causes and fixes:
   once, on the first `reset()` (first thermal), because Kalman allocates its callables (F1); owner review
   requested.
 - Blocked on ChibiOS by F2: the soaring changes are kept local until Kalman no longer requires `<print>`.
+- 2026-10-07, Kalman bumped to 2301ab7cd (F1 fixed): the pilot rebuilds unchanged; the filter object no
+  longer references the throwing `operator new`/`delete`, its SITL object code drops from 70.9 kB to
+  4.5 kB, and `Plane.Soaring` passes. The one allocation left is the pilot's own, on the first `reset()`,
+  which keeps the Kalman headers out of `AP_Soaring` (F22); it could become inline storage. Still blocked
+  on ChibiOS by F2 (`kalman.hpp` includes `<print>` unconditionally at 2301ab7cd).
 
 ## Phase 6 log
 
@@ -517,7 +522,7 @@ of the normal equations, and the coefficients in y/x^(3-i), all untyped.
 
 | Branch | Content | Waiting for |
 |---|---|---|
-| `fcarouge-soaring-pilot` | Kalman-based `AP_Soaring` thermal EKF | Kalman F2 (`<print>`) and F1 (heap callables) fixed upstream |
+| `fcarouge-soaring-pilot` | Kalman-based `AP_Soaring` thermal EKF | Kalman F2 (`<print>`) fixed upstream (F1 fixed in 2301ab7cd) |
 | `fcarouge-accelcal-typed` | TypedLinearAlgebra accelerometer calibration fit | TypedLinearAlgebra F30 (current libc++) fixed upstream |
 | `fcarouge-compasscal-typed` | Milligauss unit; TypedLinearAlgebra compass calibration sphere and ellipsoid fits | TypedLinearAlgebra F30 (current libc++) fixed upstream |
 | `fcarouge-polyfit-typed` | Positive definite typed division; TypedLinearAlgebra IMU temperature calibration polynomial fit | TypedLinearAlgebra F30 fixed upstream; firmware builds and clang to check |
