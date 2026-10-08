@@ -1,2 +1,51 @@
 #pragma once
-//For now this is just a placeholder header, if someone wants functionality please include it here
+/*
+  ArduPilot on ChibiOS has no C stdio streams: stdio.h only declares the
+  printf family, wrapped to the console. C++ standard headers still name a
+  few stream functions: <print> (C++23, included by the Kalman library)
+  refers to FILE, stdout, EOF, fwrite and putc in inline functions that
+  are only emitted when called.
+
+  Declare those names so that such headers compile, without implementing
+  them: each is bound to a symbol that is never defined, so a call fails
+  to link with a name that says why. Text output on ChibiOS goes through
+  hal.console or printf().
+ */
+#include "stdio.h"
+
+#include <sys/reent.h>
+
+#ifndef EOF
+#define EOF (-1)
+#endif
+
+extern "C" {
+
+#if !defined(__FILE_defined)
+typedef __FILE FILE;
+#define __FILE_defined
+#endif
+
+extern FILE *const ap_chibios_stdout __asm__("ap_chibios_stdio_streams_are_not_supported_stdout");
+extern FILE *const ap_chibios_stderr __asm__("ap_chibios_stdio_streams_are_not_supported_stderr");
+#ifndef stdout
+#define stdout ap_chibios_stdout
+#endif
+#ifndef stderr
+#define stderr ap_chibios_stderr
+#endif
+
+size_t fwrite(const void *ptr, size_t size, size_t count, FILE *stream) __asm__("ap_chibios_stdio_streams_are_not_supported_fwrite");
+int fputc(int c, FILE *stream) __asm__("ap_chibios_stdio_streams_are_not_supported_fputc");
+int putc(int c, FILE *stream) __asm__("ap_chibios_stdio_streams_are_not_supported_putc");
+int fflush(FILE *stream) __asm__("ap_chibios_stdio_streams_are_not_supported_fflush");
+
+}
+
+namespace std {
+using ::FILE;
+using ::fwrite;
+using ::fputc;
+using ::putc;
+using ::fflush;
+}
