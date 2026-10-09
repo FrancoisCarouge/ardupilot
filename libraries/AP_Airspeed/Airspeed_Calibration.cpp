@@ -17,16 +17,114 @@
 
 #include "AP_Airspeed.h"
 
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Kalman.h>
 
-// constructor - fill in all the initial values
-Airspeed_Calibration::Airspeed_Calibration()
-    : P(100,   0,         0,
-        0,   100,         0,
-        0,     0,  0.000001f)
-    , Q0(0.01f)
-    , Q1(0.0000005f)
-    , state(0, 0, 0)
+#include <new>
+
+
+namespace {
+
+using AP_LinearAlgebra::Units::MetresPerSecond;
+using AP_LinearAlgebra::Units::Unitless;
+
+constexpr auto metre_per_second = mp_units::si::metre / mp_units::si::second;
+constexpr auto one = mp_units::one;
+
+// state: wind north and east, and the scale factor 1/sqrt(ratio) from
+// indicated to true airspeed
+using State = AP_LinearAlgebra::ColumnVector<float, MetresPerSecond, MetresPerSecond, Unitless>;
+// output: true airspeed
+using Output = AP_LinearAlgebra::ColumnVector<float, MetresPerSecond>;
+using Covariance = AP_LinearAlgebra::OuterProduct<State, State>;
+using OutputVariance = AP_LinearAlgebra::OuterProduct<Output, Output>;
+using OutputModel = AP_LinearAlgebra::Quotient<Output, State>;
+
+// the horizontal airspeed implied by the ground velocity and the wind
+float horizontal_airspeed_squared(const State &x, const MetresPerSecond &vg_x, const MetresPerSecond &vg_y)
 {
+    const MetresPerSecond ax = vg_x - x.at<0>();
+    const MetresPerSecond ay = vg_y - x.at<1>();
+    return (ax * ax + ay * ay).numerical_value_in(metre_per_second * metre_per_second);
+}
+
+auto make_filter()
+{
+    using namespace fcarouge;
+
+    Covariance p{};
+    p.at<0, 0>(100.0f * (metre_per_second * metre_per_second));
+    p.at<1, 1>(100.0f * (metre_per_second * metre_per_second));
+    p.at<2, 2>(0.000001f * one);
+
+    // the wind and scale factor are constant but for this process noise
+    Covariance q{};
+    q.at<0, 0>(0.01f * (metre_per_second * metre_per_second));
+    q.at<1, 1>(0.01f * (metre_per_second * metre_per_second));
+    q.at<2, 2>(0.0000005f * one);
+
+    return kalman{
+        state{State{0.0f * metre_per_second, 0.0f * metre_per_second, 0.0f * one}},
+        output<Output>,
+        estimate_uncertainty{p},
+        process_uncertainty{q},
+        // a true airspeed measurement noise of 1.0 m/s
+        output_uncertainty{OutputVariance{1.0f * (metre_per_second * metre_per_second)}},
+        // H, the Jacobian of the predicted true airspeed with respect to the
+        // state, ignoring the vertical wind component
+        output_model{[](const State &x, const MetresPerSecond &vg_x, const MetresPerSecond &vg_y, const MetresPerSecond &) -> OutputModel {
+            // the inverse of the horizontal airspeed, in s/m
+            const auto SH2 = 1 / (sqrtf(horizontal_airspeed_squared(x, vg_x, vg_y)) * metre_per_second);
+            const float scale = x.at<2>().numerical_value_in(one);
+            OutputModel h{};
+            h.at<0>(-(scale * SH2 * 2 * (vg_x - x.at<0>())) / 2);
+            h.at<1>(-(scale * SH2 * 2 * (vg_y - x.at<1>())) / 2);
+            h.at<2>(1 / SH2);
+            return h;
+        }},
+        transition{[](const State &x) -> State {
+            return x;
+        }},
+        // the predicted true airspeed, scaled ground relative airspeed
+        observation{[](const State &x, const MetresPerSecond &vg_x, const MetresPerSecond &vg_y, const MetresPerSecond &vg_z) -> Output {
+            const MetresPerSecond ax = vg_x - x.at<0>();
+            const MetresPerSecond ay = vg_y - x.at<1>();
+            return Output{x.at<2>() * norm(ax.numerical_value_in(metre_per_second),
+                                           ay.numerical_value_in(metre_per_second),
+                                           vg_z.numerical_value_in(metre_per_second)) * metre_per_second};
+        }},
+        update_types<MetresPerSecond, MetresPerSecond, MetresPerSecond>,
+        // the configuration requires the (empty) prediction argument types
+        prediction_types<>};
+}
+
+} // namespace
+
+struct Airspeed_Calibration::Filter {
+    decltype(make_filter()) kalman{make_filter()};
+};
+
+Airspeed_Calibration::Airspeed_Calibration()
+{
+    static_assert(sizeof(Filter) <= filter_size, "Airspeed_Calibration::filter_size is too small for the filter");
+    static_assert(alignof(Filter) <= 8, "Airspeed_Calibration::_storage is under-aligned for the filter");
+}
+
+Airspeed_Calibration::~Airspeed_Calibration()
+{
+    if (_filter != nullptr) {
+        _filter->~Filter();
+    }
+}
+
+// the Kalman library's identity and zero values are dynamically initialized
+// variables: a filter constructed during static initialization, as a member
+// of a global object, may copy them before they are set
+Airspeed_Calibration::Filter &Airspeed_Calibration::filter()
+{
+    if (_filter == nullptr) {
+        _filter = new (_storage) Filter;
+    }
+    return *_filter;
 }
 
 /*
@@ -34,7 +132,36 @@ Airspeed_Calibration::Airspeed_Calibration()
  */
 void Airspeed_Calibration::init(float initial_ratio)
 {
-    state.z = 1.0f / sqrtf(initial_ratio);
+    set_scale(1.0f / sqrtf(initial_ratio));
+}
+
+void Airspeed_Calibration::set_scale(float scale)
+{
+    auto &kalman = filter().kalman;
+    const State x{kalman.x()};
+    kalman.x(State{x.at<0>(), x.at<1>(), scale * one});
+}
+
+Vector3f Airspeed_Calibration::get_state() const
+{
+    if (_filter == nullptr) {
+        return Vector3f();
+    }
+    const State x{_filter->kalman.x()};
+    return Vector3f(x.at<0>().numerical_value_in(metre_per_second),
+                    x.at<1>().numerical_value_in(metre_per_second),
+                    x.at<2>().numerical_value_in(one));
+}
+
+Vector3f Airspeed_Calibration::get_variances() const
+{
+    if (_filter == nullptr) {
+        return Vector3f(100, 100, 0.000001f);
+    }
+    const Covariance p{_filter->kalman.p()};
+    return Vector3f(p.at<0, 0>().numerical_value_in(metre_per_second * metre_per_second),
+                    p.at<1, 1>().numerical_value_in(metre_per_second * metre_per_second),
+                    p.at<2, 2>().numerical_value_in(one));
 }
 
 /*
@@ -43,71 +170,49 @@ void Airspeed_Calibration::init(float initial_ratio)
  */
 float Airspeed_Calibration::update(float airspeed, const Vector3f &vg, int16_t max_airspeed_allowed_during_cal)
 {
-    // Perform the covariance prediction
-    // Q is a diagonal matrix so only need to add three terms in
-    // C code implementation
-    // P = P + Q;
-    P.a.x += Q0;
-    P.b.y += Q0;
-    P.c.z += Q1;
+    auto &kalman = filter().kalman;
 
-    // Perform the predicted measurement using the current state estimates
-    // No state prediction required because states are assumed to be time
-    // invariant plus process noise
-    // Ignore vertical wind component
-    float TAS_pred = state.z * norm(vg.x - state.x, vg.y - state.y, vg.z);
-    float TAS_mea  = airspeed;
+    // Perform the covariance prediction, P = P + Q. No state prediction
+    // required because states are assumed to be time invariant plus
+    // process noise
+    kalman.predict();
 
-    // Calculate the observation Jacobian H_TAS
-    float SH1 = sq(vg.y - state.y) + sq(vg.x - state.x);
-    if (SH1 < 0.000001f) {
+    const MetresPerSecond vg_x = vg.x * metre_per_second;
+    const MetresPerSecond vg_y = vg.y * metre_per_second;
+    const MetresPerSecond vg_z = vg.z * metre_per_second;
+
+    if (horizontal_airspeed_squared(kalman.x(), vg_x, vg_y) < 0.000001f) {
         // avoid division by a small number
-        return state.z;
+        return kalman.x().at<2>().numerical_value_in(one);
     }
-    float SH2 = 1/sqrtf(SH1);
 
-    // observation Jacobian
-    Vector3f H_TAS(
-        -(state.z*SH2*(2*vg.x - 2*state.x))/2,
-        -(state.z*SH2*(2*vg.y - 2*state.y))/2,
-        1/SH2);
-
-    // Calculate the fusion innovation covariance assuming a TAS measurement
-    // noise of 1.0 m/s
-    // S = H_TAS*P*H_TAS' + 1.0; % [1 x 3] * [3 x 3] * [3 x 1] + [1 x 1]
-    Vector3f PH = P * H_TAS;
-    float S = H_TAS * PH + 1.0f;
-
-    // Calculate the Kalman gain
-    // [3 x 3] * [3 x 1] / [1 x 1]
-    Vector3f KG = PH / S;
-
-    // Update the states
-    state += KG*(TAS_mea - TAS_pred); // [3 x 1] + [3 x 1] * [1 x 1]
-
-    // Update the covariance matrix
-    Vector3f HP2 = H_TAS.row_times_mat(P);
-    P -= KG.mul_rowcol(HP2);
+    kalman.update(vg_x, vg_y, vg_z, Output{airspeed * metre_per_second});
 
     // force symmetry on the covariance matrix - necessary due to rounding
-    // errors
-    float P12 = 0.5f * (P.a.y + P.b.x);
-    float P13 = 0.5f * (P.a.z + P.c.x);
-    float P23 = 0.5f * (P.b.z + P.c.y);
-    P.a.y = P.b.x = P12;
-    P.a.z = P.c.x = P13;
-    P.b.z = P.c.y = P23;
+    // errors - and constrain diagonals to be non-negative
+    Covariance p{kalman.p()};
+    const auto p01 = 0.5f * (p.at<0, 1>() + p.at<1, 0>());
+    const auto p02 = 0.5f * (p.at<0, 2>() + p.at<2, 0>());
+    const auto p12 = 0.5f * (p.at<1, 2>() + p.at<2, 1>());
+    p.at<0, 1>(p01);
+    p.at<1, 0>(p01);
+    p.at<0, 2>(p02);
+    p.at<2, 0>(p02);
+    p.at<1, 2>(p12);
+    p.at<2, 1>(p12);
+    p.at<0, 0>(MAX(p.at<0, 0>().numerical_value_in(metre_per_second * metre_per_second), 0.0f) * (metre_per_second * metre_per_second));
+    p.at<1, 1>(MAX(p.at<1, 1>().numerical_value_in(metre_per_second * metre_per_second), 0.0f) * (metre_per_second * metre_per_second));
+    p.at<2, 2>(MAX(p.at<2, 2>().numerical_value_in(one), 0.0f) * one);
+    kalman.p(p);
 
-    // Constrain diagonals to be non-negative - protects against rounding errors
-    P.a.x = MAX(P.a.x, 0.0f);
-    P.b.y = MAX(P.b.y, 0.0f);
-    P.c.z = MAX(P.c.z, 0.0f);
+    const State x{kalman.x()};
+    const float limit = max_airspeed_allowed_during_cal;
+    const float scale = constrain_float(x.at<2>().numerical_value_in(one), 0.5f, 1.0f);
+    kalman.x(State{constrain_float(x.at<0>().numerical_value_in(metre_per_second), -limit, limit) * metre_per_second,
+                   constrain_float(x.at<1>().numerical_value_in(metre_per_second), -limit, limit) * metre_per_second,
+                   scale * one});
 
-    state.x = constrain_float(state.x, -max_airspeed_allowed_during_cal, max_airspeed_allowed_during_cal);
-    state.y = constrain_float(state.y, -max_airspeed_allowed_during_cal, max_airspeed_allowed_during_cal);
-    state.z = constrain_float(state.z, 0.5f, 1.0f);
-
-    return state.z;
+    return scale;
 }
 
 
@@ -134,7 +239,7 @@ void AP_Airspeed::update_calibration(uint8_t i, const Vector3f &vground, int16_t
     // very useful both for testing and to force a reasonable value.
     float ratio = constrain_float(param[i].ratio, 1.0f, 4.0f);
 
-    state[i].calibration.state.z = 1.0f / sqrtf(ratio);
+    state[i].calibration.set_scale(1.0f / sqrtf(ratio));
 
     // calculate true airspeed, assuming a airspeed ratio of 1.0
     float dpress = MAX(get_differential_pressure(i), 0);
@@ -189,6 +294,8 @@ void AP_Airspeed::send_airspeed_calibration(const Vector3f &vground)
             // auto-calibration not enabled on this sensor
             continue;
         }
+        const Vector3f calibration_state = state[i].calibration.get_state();
+        const Vector3f calibration_variances = state[i].calibration.get_variances();
         const mavlink_airspeed_autocal_t packet{
         vx: vground.x,
         vy: vground.y,
@@ -196,12 +303,12 @@ void AP_Airspeed::send_airspeed_calibration(const Vector3f &vground)
         diff_pressure: get_differential_pressure(i),
         EAS2TAS: AP::ahrs().get_EAS2TAS(),
         ratio: param[i].ratio.get(),
-        state_x: state[i].calibration.state.x,
-        state_y: state[i].calibration.state.y,
-        state_z: state[i].calibration.state.z,
-        Pax: state[i].calibration.P.a.x,
-        Pby: state[i].calibration.P.b.y,
-        Pcz: state[i].calibration.P.c.z
+        state_x: calibration_state.x,
+        state_y: calibration_state.y,
+        state_z: calibration_state.z,
+        Pax: calibration_variances.x,
+        Pby: calibration_variances.y,
+        Pcz: calibration_variances.z
         };
         gcs().send_to_active_channels(MAVLINK_MSG_ID_AIRSPEED_AUTOCAL,
                                       (const char *)&packet);
