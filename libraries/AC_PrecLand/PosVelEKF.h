@@ -43,7 +43,7 @@ private:
     // init(), not with this object: no heap, and not during static
     // initialization, whose order the filter's default values depend on
     struct Filter;
-    static constexpr size_t filter_size = 160;
+    static constexpr size_t filter_size = 120;
     alignas(8) uint8_t _storage[filter_size];
     Filter *_filter = nullptr;
 };
