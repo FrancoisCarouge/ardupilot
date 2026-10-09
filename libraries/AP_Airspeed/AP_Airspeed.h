@@ -58,9 +58,10 @@ public:
 
 class Airspeed_Calibration {
 public:
-    friend class AP_Airspeed;
-    // constructor
     Airspeed_Calibration();
+    ~Airspeed_Calibration();
+
+    CLASS_NO_COPY(Airspeed_Calibration);
 
     // initialise the calibration
     void init(float initial_ratio);
@@ -69,12 +70,24 @@ public:
     // new scaling factor
     float update(float airspeed, const Vector3f &vg, int16_t max_airspeed_allowed_during_cal);
 
+    // set the scale factor estimate, 1/sqrt(ratio)
+    void set_scale(float scale);
+
+    // the state, wind north and east (m/s) and scale factor, and its variances
+    Vector3f get_state() const;
+    Vector3f get_variances() const;
+
 private:
-    // state of kalman filter for airspeed ratio estimation
-    Matrix3f P; // covariance matrix
-    const float Q0; // process noise matrix top left and middle element
-    const float Q1; // process noise matrix bottom right element
-    Vector3f state; // state vector
+    // the typed Kalman filter for the airspeed ratio, defined in
+    // Airspeed_Calibration.cpp to keep its expensive headers out of this one,
+    // and constructed in this storage on first use, not with this object: no
+    // heap, and not during static initialization, whose order the filter's
+    // default values depend on
+    struct Filter;
+    static constexpr size_t filter_size = 184;
+    alignas(8) uint8_t _storage[filter_size];
+    Filter *_filter = nullptr;
+    Filter &filter();
 };
 
 class AP_Airspeed
