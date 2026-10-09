@@ -29,7 +29,7 @@
 #include "AP_LinearAlgebra.h"
 #include "AP_LinearAlgebra_Units.h"
 
-namespace fcarouge::kalman_internal {
+namespace fcarouge::kalman_filter::internal {
 
 // typed matrices evaluate, transpose, and have identity and zero values
 // through their backend matrix
@@ -65,17 +65,17 @@ template <auto Reference, typename Representation>
 inline mp_units::quantity<Reference, Representation>
 zero<mp_units::quantity<Reference, Representation>> {Representation{0} * Reference};
 
-} // namespace fcarouge::kalman_internal
+} // namespace fcarouge::kalman_filter::internal
 
 namespace AP_LinearAlgebra {
 
 // the type of a * transpose(b), for example a covariance matrix
 template <typename A, typename B>
-using OuterProduct = fcarouge::kalman_internal::evaluate<
-    fcarouge::kalman_internal::product<A, fcarouge::kalman_internal::evaluate<fcarouge::kalman_internal::transpose<B>>>>;
+using OuterProduct = fcarouge::kalman_filter::internal::evaluate<
+    fcarouge::kalman_filter::internal::product<A, fcarouge::kalman_filter::internal::evaluate<fcarouge::kalman_filter::internal::transpose<B>>>>;
 
 // the type of the matrix m with m * b of the type a, for example an output model
 template <typename A, typename B>
-using Quotient = fcarouge::kalman_internal::evaluate<fcarouge::kalman_internal::quotient<A, B>>;
+using Quotient = fcarouge::kalman_filter::internal::evaluate<fcarouge::kalman_filter::internal::quotient<A, B>>;
 
 } // namespace AP_LinearAlgebra
