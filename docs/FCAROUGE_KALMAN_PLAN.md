@@ -524,26 +524,35 @@ of the normal equations, and the coefficients in y/x^(3-i), all untyped.
 - Results: `test_polyfit` and `test_linear_algebra` pass (g++ 15); `Plane.IMUTempCal` passes on the
   baseline and on the port. Not yet done: firmware builds (size, stack), clang 20.
 
-### Parked work (local branches, not pushed)
+### Refresh 2026-10-09: upstream fixes, parked work folded in
 
-| Branch | Content | Waiting for |
-|---|---|---|
-| `fcarouge-soaring-pilot` | Kalman-based `AP_Soaring` thermal EKF | TypedLinearAlgebra F30 (WebAssembly); F1 fixed upstream, F2 worked around |
-| `fcarouge-accelcal-typed` | TypedLinearAlgebra accelerometer calibration fit | TypedLinearAlgebra F30 (current libc++) fixed upstream |
-| `fcarouge-compasscal-typed` | Milligauss unit; TypedLinearAlgebra compass calibration sphere and ellipsoid fits | TypedLinearAlgebra F30 (current libc++) fixed upstream |
-| `fcarouge-polyfit-typed` | Positive definite typed division; TypedLinearAlgebra IMU temperature calibration polynomial fit | TypedLinearAlgebra F30 fixed upstream; firmware builds and clang to check |
+- `fcarouge` rebased onto the fork's `master` (219 new commits; the only conflicts were upstream's
+  zero-initialized `rmt_config_t` in the ESP32 RMT readers, which this branch replaces or removes).
+- Submodules bumped: Kalman ae8146d7b, TypedLinearAlgebra c9a5c2b, mp-units 132b590d2. Kalman moved its
+  customization points to `fcarouge::kalman_filter::internal`; `AP_LinearAlgebra_Kalman.h` follows.
+- TypedLinearAlgebra c9a5c2b fixes F30: WebAssembly Plane (emscripten 6.0.8, as in CI) builds with the
+  thermal EKF and the accelerometer, compass and polynomial fits. Nothing is parked any more: the four
+  branches are folded into `fcarouge` (and kept, pushed, for reference).
+- Validation of the folded work: SITL plane and copter build with g++ 15 and clang 20; `test_linear_algebra`
+  (9), `test_polyfit` (2), `test_accel_calibrator` (2) pass with both; autotests `Plane.Soaring`,
+  `Plane.IMUTempCal`, `Copter.FixedYawCalibration` and `Copter.SITLCompassCalibration` pass (compass offsets
+  within 0.009 mGauss); CubeOrange and MatekF405 copter and plane build with `-Werror`. Code size against
+  `fcarouge` before the fold: CubeOrange copter +312 B, plane +2760 B; MatekF405 copter +1984 B, plane
+  +4424 B.
+- clang 20 `-Wshadow` caught a test variable `a` shadowing mp-units' `a` unit symbol; renamed.
+- F19 withdrawn (the setter takes `const element &`); the thermal EKF's output model now sets its
+  elements from temporaries. F3 fixed. Other findings rechecked, see `FCAROUGE_FINDINGS.md`.
+- Human review requested: the sensor calibrations (accelerometer, compass, IMU temperature) and the
+  thermal EKF now run on the typed code; the compass damping keeps its unit-inconsistent behaviour.
 
-### Resuming (paused 2026-10-06 while the FrancoisCarouge findings are resolved)
+### Next
 
-1. Bump `modules/Kalman`, `modules/TypedLinearAlgebra` (and `modules/mp-units` if needed) to the fixed
-   upstream commits, one commit each; rebuild SITL, the unit tests, CubeOrange and MatekF405; check the
-   WebAssembly build (F30) locally with emsdk 4.0.20.
-2. Mark the resolved findings in `FCAROUGE_FINDINGS.md`; remove workarounds they make unnecessary
-   (in-place accumulation for F28, `ElementType` dispatch for F20, consistency check for F32).
-3. Rebase each parked branch onto `fcarouge`, re-run its validation (logged above), then fold it in:
-   soaring pilot (F1, F2), accelerometer fit, compass fits, polynomial fit.
-4. Continue the inventory: kinematic shaping triplets, SCurve, then PrecLand, Airspeed, EKFGSF, EKF2/EKF3.
-5. Rebase onto the fork's `master` and watch PR 3 CI.
+1. Watch PR 3 CI on the rebased branch.
+2. Remove workarounds once their findings are fixed upstream (in-place accumulation for F28, `ElementType`
+   dispatch for F20, consistency check for F32, the `cstdio` declarations for F2 if `<print>` becomes
+   opt-in).
+3. Continue the inventory: kinematic shaping triplets, SCurve, then PrecLand, Airspeed, EKFGSF, EKF2/EKF3.
 
 Environment notes: waf builds the directory of the last `configure` (its lock file), whatever `--out`
-says, so configure before switching build directories; the SITL autotests need pymavlink 2.4.50.
+says, so configure before switching build directories; the SITL autotests need pymavlink 2.4.50; the
+WebAssembly check uses emsdk 6.0.8, the CI version.
