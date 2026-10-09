@@ -551,7 +551,30 @@ of the normal equations, and the coefficients in y/x^(3-i), all untyped.
 2. Remove workarounds once their findings are fixed upstream (in-place accumulation for F28, `ElementType`
    dispatch for F20, consistency check for F32, the `cstdio` declarations for F2 if `<print>` becomes
    opt-in).
-3. Continue the inventory: PrecLand, Airspeed, EKFGSF, EKF2/EKF3.
+3. Continue the inventory: Airspeed, EKFGSF, EKF2/EKF3.
+
+### Precision landing filter (`AC_PrecLand/PosVelEKF`)
+
+- Kalman filter over typed `[position m, velocity m/s]`, input the velocity change, process noise from the
+  prediction arguments, position measurement. The public interface is unchanged; the filter lives in
+  fixed storage inside `PosVelEKF` (no heap, Kalman headers kept out of `AC_PrecLand.h`).
+- Found in SITL, not by the unit tests: constructed with the global `AC_PrecLand`, the filter copied
+  Kalman's `one<output_model>` before its dynamic initialization, a zero output model, so it never
+  corrected (`Copter.PrecisionLanding` landed 52 m and 2.9 m off). F21 is a correctness finding; the
+  filter is now constructed on the first `init()`, and `test_posvelekf` has a global filter case.
+- Equivalence over 200 random 10 s runs (filters built at run time): positions within 3.8 um, velocities
+  4.3e-6 m/s, NIS 5e-4 relative (Joseph form update, F8).
+- Validation from a clean worktree: unit tests (g++ 15, clang 20), WebAssembly, `Copter.PrecisionLanding`
+  and `PrecisionLoiterCompanion` pass (0.35 m from target, as before). CubeOrange copter +2320 B code,
+  +40 B data; MatekF405 unchanged (no precision landing).
+
+### Validation method
+
+A long-lived build directory gave wrong results here: after header layout changes, objects that embed
+`AC_PrecLand` were not all rebuilt, and failures (or passes) followed the stale objects. Autotests are
+now run from a fresh worktree with a new build directory; on 2026-10-09 everything folded so far was
+re-validated that way (the ten autotests listed above and in the 2026-10-09 refresh, all unit tests).
+Firmware sizes measured earlier match fresh builds.
 
 ### SCurve segments (`AP_Math/SCurve`)
 
