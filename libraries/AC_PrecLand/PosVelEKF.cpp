@@ -1,117 +1,150 @@
 #include "PosVelEKF.h"
-#include <math.h>
-#include <string.h>
+
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Kalman.h>
+
+#include <new>
+
+namespace {
+
+using AP_LinearAlgebra::Units::Metres;
+using AP_LinearAlgebra::Units::MetresPerSecond;
+using AP_LinearAlgebra::Units::Seconds;
+
+constexpr auto metre = mp_units::si::metre;
+constexpr auto second = mp_units::si::second;
+constexpr auto metre_per_second = metre / second;
+
+// state: position and velocity of the target relative to the vehicle
+using State = AP_LinearAlgebra::ColumnVector<float, Metres, MetresPerSecond>;
+// output: the measured relative position
+using Output = AP_LinearAlgebra::ColumnVector<float, Metres>;
+// input: the change of the relative velocity over the prediction
+using Input = AP_LinearAlgebra::ColumnVector<float, MetresPerSecond>;
+using Covariance = AP_LinearAlgebra::OuterProduct<State, State>;
+using OutputVariance = AP_LinearAlgebra::OuterProduct<Output, Output>;
+using StateTransition = AP_LinearAlgebra::Quotient<State, State>;
+using InputControl = AP_LinearAlgebra::Quotient<State, Input>;
+
+/*
+  newState = F * oldState + G * dVel, with
+  F = |1 dt|   G = |0|   Q = |0       0      |
+      |0  1|       |1|       |0   dVelNoise^2|
+  and a position measurement, H = [1 0]
+ */
+auto make_filter()
+{
+    using namespace fcarouge;
+    return kalman{
+        state{State{0.0f * metre, 0.0f * metre_per_second}},
+        output<Output>,
+        input<Input>,
+        // set by init()
+        estimate_uncertainty{Covariance{}},
+        process_uncertainty{[](const State &, const Seconds &, const MetresPerSecond &dVelNoise) -> Covariance {
+            Covariance q{};
+            q.at<1, 1>(dVelNoise * dVelNoise);
+            return q;
+        }},
+        // set by fusePos()
+        output_uncertainty{OutputVariance{0.0f * (metre * metre)}},
+        state_transition{[](const Input &, const Seconds &dt, const MetresPerSecond &) -> StateTransition {
+            StateTransition f{};
+            f.at<0, 0>(1.0f * mp_units::one);
+            f.at<0, 1>(dt);
+            f.at<1, 1>(1.0f * mp_units::one);
+            return f;
+        }},
+        input_control{[](const Seconds &, const MetresPerSecond &) -> InputControl {
+            return InputControl{0.0f * second, 1.0f * mp_units::one};
+        }},
+        prediction_types<Seconds, MetresPerSecond>};
+}
+
+} // namespace
+
+struct PosVelEKF::Filter {
+    decltype(make_filter()) kalman{make_filter()};
+};
+
+PosVelEKF::PosVelEKF()
+{
+    static_assert(sizeof(Filter) <= filter_size, "PosVelEKF::filter_size is too small for the filter");
+    static_assert(alignof(Filter) <= 8, "PosVelEKF::_storage is under-aligned for the filter");
+}
+
+PosVelEKF::~PosVelEKF()
+{
+    if (_filter != nullptr) {
+        _filter->~Filter();
+    }
+}
 
 // Initialize the covariance and state matrix
 // This is called when the landing target is located for the first time or it was lost, then relocated
 void PosVelEKF::init(float pos, float posVar, float vel, float velVar)
 {
-    _state[0] = pos;
-    _state[1] = vel;
-    _cov[0] = posVar;
-    _cov[1] = 0.0f;
-    _cov[2] = velVar;
+    // the Kalman library's identity and zero values are dynamically
+    // initialized variables: a filter constructed during static
+    // initialization, as a member of a global object, may copy them before
+    // they are set, leaving for example a zero output model
+    if (_filter == nullptr) {
+        _filter = new (_storage) Filter;
+    }
+    auto &kalman = _filter->kalman;
+    kalman.x(State{pos * metre, vel * metre_per_second});
+    Covariance p{};
+    p.at<0, 0>(posVar * (metre * metre));
+    p.at<1, 1>(velVar * (metre_per_second * metre_per_second));
+    kalman.p(p);
 }
 
 // This functions runs the Prediction Step of the EKF
 // This is called at 400 hz
 void PosVelEKF::predict(float dt, float dVel, float dVelNoise)
 {
-    // Newly predicted state and covariance matrix at next time step
-    float newState[2];
-    float newCov[3];
-
-    // We assume the following state model for this problem
-    newState[0] = dt*_state[1] + _state[0];
-    newState[1] = dVel + _state[1];
-
-    /*
-        The above state model is broken down into the needed EKF form:
-        newState = A*OldState + B*u
-
-        Taking jacobian with respect to state, we derive the A (or F) matrix.
-
-        A = F = |1 dt|
-                |0  1|
-
-        B = |0|
-            |1|
-
-        u = dVel
-
-        Covariance Matrix is ALWAYS symmetric, therefore the following matrix is assumed:
-        P = Covariance Matrix = |cov[0]  cov[1]|
-                                |cov[1]  cov[2]|
-
-        newCov = F * P * F.transpose + Q
-        Q = |0       0      |
-            |0   dVelNoise^2|
-
-        Post algebraic operations, and converting it to a upper triangular matrix (because of symmetry)
-        The Updated covariance matrix is of the following form:
-    */
-
-    newCov[0] = dt*_cov[1] + dt*(dt*_cov[2] + _cov[1]) + _cov[0];
-    newCov[1] = dt*_cov[2] + _cov[1];
-    newCov[2] = ((dVelNoise)*(dVelNoise)) + _cov[2];
-
-    // store the predicted matrices
-    memcpy(_state,newState,sizeof(_state));
-    memcpy(_cov,newCov,sizeof(_cov));
+    if (_filter == nullptr) {
+        return;
+    }
+    _filter->kalman.predict(dt * second, dVelNoise * metre_per_second, Input{dVel * metre_per_second});
 }
 
 // fuse the new sensor measurement into the EKF calculations
 // This is called whenever we have a new measurement available
 void PosVelEKF::fusePos(float pos, float posVar)
 {
-    float newState[2];
-    float newCov[3];
+    if (_filter == nullptr) {
+        return;
+    }
+    auto &kalman = _filter->kalman;
+    kalman.r(OutputVariance{posVar * (metre * metre)});
+    kalman.update(Output{pos * metre});
+}
 
-    // innovation_residual = new_sensor_readings - OldState
-    const float innovation_residual = pos - _state[0];
+float PosVelEKF::getPos() const
+{
+    if (_filter == nullptr) {
+        return 0.0f;
+    }
+    return _filter->kalman.x().at<0>().numerical_value_in(metre);
+}
 
-    /*
-    Measurement matrix H = [1 0] since we are directly measuring pos only
-    Innovation Covariance = S = H * P * H.Transpose + R
-    Since this is a 1-D measurement, R = posVar, which is expected variance in position sensor reading
-    Post multiplication this becomes:
-    */
-    const float innovation_covariance = _cov[0] + posVar;
-
-    /*
-    Next step involves calculating the kalman gain "K"
-    K = P * H.transpose * S.inverse
-    After solving, this comes out to be:
-    K = | cov[0]/innovation_covariance |
-        | cov[1]/innovation_covariance |
-
-    Updated state estimate = OldState + K * innovation residual
-    This is calculated and simplified below
-    */
-
-    newState[0] = _cov[0]*(innovation_residual)/(innovation_covariance) + _state[0];
-    newState[1] = _cov[1]*(innovation_residual)/(innovation_covariance) + _state[1];
-
-    /*
-    Updated covariance matrix = (I-K*H)*P
-    This is calculated and simplified below. Again, this is converted to upper triangular matrix (because of symmetry)
-    */
-
-    newCov[0] = _cov[0] * posVar / innovation_covariance;
-    newCov[1] = _cov[1] * posVar / innovation_covariance;
-    newCov[2] = -_cov[1] * _cov[1] / innovation_covariance + _cov[2];
-
-    memcpy(_state,newState,sizeof(_state));
-    memcpy(_cov,newCov,sizeof(_cov));
+float PosVelEKF::getVel() const
+{
+    if (_filter == nullptr) {
+        return 0.0f;
+    }
+    return _filter->kalman.x().at<1>().numerical_value_in(metre_per_second);
 }
 
 // Returns normalized innovation squared
 float PosVelEKF::getPosNIS(float pos, float posVar)
 {
     // NIS = innovation_residual.Transpose * Innovation_Covariance.Inverse * innovation_residual
-    const float innovation_residual = pos - _state[0];
-    const float innovation_covariance = _cov[0] + posVar;
-
-    const float NIS = (innovation_residual*innovation_residual)/(innovation_covariance);
-    return NIS;
+    if (_filter == nullptr) {
+        return 0.0f;
+    }
+    const auto &kalman = _filter->kalman;
+    const Metres innovation_residual = pos * metre - kalman.x().at<0>();
+    const auto innovation_covariance = kalman.p().at<0, 0>() + posVar * (metre * metre);
+    return (innovation_residual * innovation_residual / innovation_covariance).numerical_value_in(mp_units::one);
 }
