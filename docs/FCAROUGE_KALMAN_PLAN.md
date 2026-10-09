@@ -551,7 +551,21 @@ of the normal equations, and the coefficients in y/x^(3-i), all untyped.
 2. Remove workarounds once their findings are fixed upstream (in-place accumulation for F28, `ElementType`
    dispatch for F20, consistency check for F32, the `cstdio` declarations for F2 if `<print>` becomes
    opt-in).
-3. Continue the inventory: SCurve, then PrecLand, Airspeed, EKFGSF, EKF2/EKF3.
+3. Continue the inventory: PrecLand, Airspeed, EKFGSF, EKF2/EKF3.
+
+### SCurve segments (`AP_Math/SCurve`)
+
+- Each segment's `[acceleration, velocity, position]` (m/s/s, m/s, m) is a typed vector: the kinematics
+  at the segment start are carried over the elapsed time by a typed transition matrix (elements 1, s,
+  s^2/2), plus the constant or raised cosine jerk contribution built from mp-units quantities. The
+  decreasing jerk segment is the second half of the increasing one. The header is unchanged.
+- Equivalence over a grid of jerks, durations and start states: rounding only, at most 0.49 mm in
+  position at 4 km, 1.1e-5 m/s, 3.8e-6 m/s/s, jerk identical. `test_scurve` passes with g++ 15 and
+  clang 20; WebAssembly Plane builds; autotests `Copter.CopterMission`, `WPArcs`, `SplineTerrain` and
+  `NavDelay` pass. `Copter.FlyMissionTwice` fails identically before and after, and on the fork's
+  unmodified `master` built with its own g++ 13: an upstream failure, not this work.
+- CubeOrange and MatekF405 copter build with `-Werror`, 572 B larger. Finding F34 (no element list
+  constructor for a heterogeneous matrix). Flight path code: human review requested.
 
 ### Kinematic shaping (`AP_Math/control`): assessed, not a TypedLinearAlgebra fit
 
