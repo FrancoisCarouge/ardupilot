@@ -551,7 +551,17 @@ of the normal equations, and the coefficients in y/x^(3-i), all untyped.
 2. Remove workarounds once their findings are fixed upstream (in-place accumulation for F28, `ElementType`
    dispatch for F20, consistency check for F32, the `cstdio` declarations for F2 if `<print>` becomes
    opt-in).
-3. Continue the inventory: kinematic shaping triplets, SCurve, then PrecLand, Airspeed, EKFGSF, EKF2/EKF3.
+3. Continue the inventory: SCurve, then PrecLand, Airspeed, EKFGSF, EKF2/EKF3.
+
+### Kinematic shaping (`AP_Math/control`): assessed, not a TypedLinearAlgebra fit
+
+The `[position, velocity, acceleration]` triples of `update_pos_vel_accel*`, `shape_*_vel_accel*` and
+`shape_angle_vel_accel` are passed as separate arguments to scalar, nonlinear per-axis controllers
+(`sqrt_controller`, limits, constraints); the only linear algebra is the two-line propagation in
+`update_pos_vel_accel`. Position is `postype_t`, `double` on most builds, with `float` velocity and
+acceleration, and a typed vector has one scalar type (F33): typing the triple would widen the 400 Hz
+position loop to `double` for little checking. Units on these scalars (mp-units quantities, without
+TypedLinearAlgebra) would be the fitting tool; left unchanged.
 
 Environment notes: waf builds the directory of the last `configure` (its lock file), whatever `--out`
 says, so configure before switching build directories; the SITL autotests need pymavlink 2.4.50; the
