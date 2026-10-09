@@ -25,13 +25,32 @@ import os
 import re
 import sys
 
+# C++26 needs at least GCC 14; when the default compiler is older, prefer
+# an installed versioned one (e.g. g++-14 or arm-linux-gnueabihf-g++-14 on
+# Ubuntu 24.04)
+GCC_VERSIONS = ['15', '14']
+
+def _find_gcc_version(conf, names, var):
+    prog = conf.find_program(names, var=var)
+    conf.get_cc_version(prog, gcc=True)
+    if var in os.environ or int(conf.env.CC_VERSION[0]) >= 14:
+        return
+    for version in GCC_VERSIONS:
+        # find_program returns conf.env[var] when set, so clear it first
+        conf.env[var] = []
+        versioned = conf.find_program('%s-%s' % (names[0], version), var=var, mandatory=False)
+        if versioned:
+            conf.get_cc_version(versioned, gcc=True)
+            return
+    conf.env[var] = prog
+    conf.get_cc_version(prog, gcc=True)
+
 @conf
 def find_gxx(conf):
     names = ['g++', 'c++']
     if conf.env.TOOLCHAIN != 'native':
         names = ['%s-%s' % (conf.env.TOOLCHAIN, n) for n in names]
-    cxx = conf.find_program(names, var='CXX')
-    conf.get_cc_version(cxx, gcc=True)
+    _find_gcc_version(conf, names, 'CXX')
     conf.env.CXX_NAME = 'gcc'
 
 @conf
@@ -39,8 +58,7 @@ def find_gcc(conf):
     names = ['gcc', 'cc']
     if conf.env.TOOLCHAIN != 'native':
         names = ['%s-%s' % (conf.env.TOOLCHAIN, n) for n in names]
-    cc = conf.find_program(names, var='CC')
-    conf.get_cc_version(cc, gcc=True)
+    _find_gcc_version(conf, names, 'CC')
     conf.env.CC_NAME = 'gcc'
 
 def _clang_cross_support(cfg):

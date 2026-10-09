@@ -61,11 +61,11 @@ SITL_PKGS="${PYPKGVER}-pip ${PYPKGVER}-devel ${PYPKGVER}-setuptools ${PYPKGVER}-
 
 PYTHON_PKGS="lxml pymavlink MAVProxy pexpect argparse pyparsing geocoder pyserial empy==3.3.4 ptyprocess dronecan"
 PYTHON_PKGS+=" flake8 junitparser pygame intelhex psutil pyyaml"
-# GNU Tools for ARM Embedded Processors
-# (see https://launchpad.net/gcc-arm-embedded/)
-ARM_ROOT="gcc-arm-none-eabi-10-2020-q4-major"
-ARM_TARBALL="$ARM_ROOT-x86_64-linux.tar.bz2"
-ARM_TARBALL_URL="https://firmware.ardupilot.org/Tools/STM32-tools/$ARM_TARBALL"
+# Arm GNU Toolchain for Arm Embedded Processors
+# (see https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)
+ARM_ROOT="arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi"
+ARM_TARBALL="$ARM_ROOT.tar.xz"
+ARM_TARBALL_URL="https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/$ARM_TARBALL"
 
 ARM_LINUX_ROOT=gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabihf
 ARM_LINUX_GCC_URL="https://releases.linaro.org/components/toolchain/binaries/7.5-2019.12/arm-linux-gnueabihf/gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabihf.tar.xz"
@@ -127,7 +127,7 @@ if [ ! -d $OPT/$ARM_ROOT ]; then
     (
         cd $OPT;
         sudo axel -a -c $ARM_TARBALL_URL;
-        sudo tar xjf ${ARM_TARBALL};
+        sudo tar xJf ${ARM_TARBALL};
         sudo rm ${ARM_TARBALL};
     )
 fi

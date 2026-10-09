@@ -114,7 +114,8 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: ardupilot/ardupilot-dev-${{ matrix.toolchain }}:v0.2.0
-      options: --user 1001
+      # root, to install the C++26 compilers
+      options: --user root
     strategy:
       fail-fast: false  # don't cancel if a job from the matrix fails
       matrix:
@@ -132,6 +133,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: 'recursive'
+      - uses: ./.github/actions/setup-cxx26
+        with:
+          clang: ${{ matrix.toolchain == 'clang' }}
       - uses: ./.github/actions/setup-ccache
         with:
           key-suffix: ${{ matrix.toolchain }}-${{ matrix.config }}

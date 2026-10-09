@@ -578,6 +578,7 @@ def configure(cfg):
             cfg.end_msg('disabled', color='YELLOW')
 
     cfg.load('littlefs')
+    cfg.load('fcarouge')
     cfg.load('static_linking')
     cfg.load('build_summary')
 

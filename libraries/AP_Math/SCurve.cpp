@@ -21,6 +21,8 @@
 #include <AP_Logger/AP_Logger.h>
 #endif
 #include "SCurve.h"
+#include <AP_LinearAlgebra/AP_LinearAlgebra.h>
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Units.h>
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
 #include <stdio.h>
@@ -843,12 +845,92 @@ void SCurve::get_jerk_accel_vel_pos_at_time(float time_now, float &Jt_out, float
 }
 
 // calculate the jerk, acceleration, velocity and position at time time_now when running the constant jerk time segment
+namespace {
+
+using AP_LinearAlgebra::ColumnVector;
+using AP_LinearAlgebra::TypedMatrix;
+using AP_LinearAlgebra::Units::Metres;
+using AP_LinearAlgebra::Units::MetresPerSecond;
+using AP_LinearAlgebra::Units::MetresPerSecondSquared;
+using AP_LinearAlgebra::Units::Quantity;
+using AP_LinearAlgebra::Units::Seconds;
+
+constexpr auto metre = mp_units::si::metre;
+constexpr auto second = mp_units::si::second;
+constexpr auto metre_per_second = metre / second;
+constexpr auto metre_per_second_squared = metre / second / second;
+constexpr auto metre_per_second_cubed = metre / second / second / second;
+
+using MetresPerSecondCubed = Quantity<metre_per_second_cubed>;
+using Frequency = Quantity<mp_units::one / second>;
+
+// the acceleration, velocity and position of a segment
+using Kinematics = ColumnVector<float, MetresPerSecondSquared, MetresPerSecond, Metres>;
+
+/*
+  carries the kinematics at the start of a segment over a time t without
+  jerk: velocity gains acceleration * t, position gains velocity * t and
+  acceleration * t^2 / 2
+ */
+using Transition = TypedMatrix<float,
+                               std::tuple<MetresPerSecondSquared, MetresPerSecond, Metres>,
+                               std::tuple<Quantity<mp_units::one / metre_per_second_squared>,
+                                          Quantity<mp_units::one / metre_per_second>,
+                                          Quantity<mp_units::one / metre>>>;
+
+Transition transition(const Seconds &t)
+{
+    // a heterogeneous matrix has no element list constructor: the elements
+    // above the diagonal stay zero
+    const auto one = mp_units::one;
+    Transition f{};
+    f.at<0, 0>(1.0f * one);
+    f.at<1, 0>(t);
+    f.at<1, 1>(1.0f * one);
+    f.at<2, 0>(0.5f * (t * t));
+    f.at<2, 1>(t);
+    f.at<2, 2>(1.0f * one);
+    return f;
+}
+
+Kinematics kinematics(float accel, float vel, float pos)
+{
+    return Kinematics{accel * metre_per_second_squared, vel * metre_per_second, pos * metre};
+}
+
+void output(const MetresPerSecondCubed &jerk, const Kinematics &k, float &Jt, float &At, float &Vt, float &Pt)
+{
+    Jt = jerk.numerical_value_in(metre_per_second_cubed);
+    At = k.at<0>().numerical_value_in(metre_per_second_squared);
+    Vt = k.at<1>().numerical_value_in(metre_per_second);
+    Pt = k.at<2>().numerical_value_in(metre);
+}
+
+// the kinematics gained over t from a constant jerk
+Kinematics constant_jerk(const MetresPerSecondCubed &jerk, const Seconds &t)
+{
+    return Kinematics{jerk * t, 0.5f * jerk * (t * t), (1.0f / 6.0f) * jerk * (t * t * t)};
+}
+
+/*
+  the kinematics gained over t from a jerk rising as alpha * (1 - cos(beta * t)),
+  from zero to 2 * alpha over pi / beta
+ */
+Kinematics raised_cosine_jerk(const MetresPerSecondCubed &alpha, const Frequency &beta, const Seconds &t)
+{
+    const float angle = (beta * t).numerical_value_in(mp_units::one);
+    return Kinematics{alpha * t - (alpha / beta) * sinf(angle),
+                      (alpha * 0.5f) * (t * t) + (alpha / (beta * beta)) * cosf(angle) - alpha / (beta * beta),
+                      (-alpha / (beta * beta)) * t + alpha * (t * t * t) / 6.0f + (alpha / (beta * beta * beta)) * sinf(angle)};
+}
+
+} // namespace
+
 void SCurve::calc_javp_for_segment_const_jerk(float time_now, float J0, float A0, float V0, float P0, float &Jt, float &At, float &Vt, float &Pt) const
 {
-    Jt = J0;
-    At = A0 + J0 * time_now;
-    Vt = V0 + A0 * time_now + 0.5f * J0 * (time_now * time_now);
-    Pt = P0 + V0 * time_now + 0.5f * A0 * (time_now * time_now) + (1.0f / 6.0f) * J0 * (time_now * time_now * time_now);
+    const Seconds t = time_now * second;
+    const MetresPerSecondCubed jerk = J0 * metre_per_second_cubed;
+    output(jerk, transition(t) * kinematics(A0, V0, P0) + constant_jerk(jerk, t), Jt, At, Vt, Pt);
 }
 
 // Calculate the jerk, acceleration, velocity and position at time time_now when running the increasing jerk magnitude time segment based on a raised cosine profile
@@ -861,12 +943,11 @@ void SCurve::calc_javp_for_segment_incr_jerk(float time_now, float tj, float Jm,
         Pt = P0;
         return;
     }
-    const float Alpha = Jm * 0.5f;
-    const float Beta = M_PI / tj;
-    Jt = Alpha * (1.0f - cosf(Beta * time_now));
-    At = A0 + Alpha * time_now - (Alpha / Beta) * sinf(Beta * time_now);
-    Vt = V0 + A0 * time_now + (Alpha * 0.5f) * (time_now * time_now) + (Alpha / (Beta * Beta)) * cosf(Beta * time_now) - Alpha / (Beta * Beta);
-    Pt = P0 + V0 * time_now + 0.5f * A0 * (time_now * time_now) + (-Alpha / (Beta * Beta)) * time_now + Alpha * (time_now * time_now * time_now) / 6.0f + (Alpha / (Beta * Beta * Beta)) * sinf(Beta * time_now);
+    const Seconds t = time_now * second;
+    const MetresPerSecondCubed alpha = Jm * 0.5f * metre_per_second_cubed;
+    const Frequency beta = float(M_PI) / (tj * second);
+    const MetresPerSecondCubed jerk = alpha * (1.0f - cosf((beta * t).numerical_value_in(mp_units::one)));
+    output(jerk, transition(t) * kinematics(A0, V0, P0) + raised_cosine_jerk(alpha, beta, t), Jt, At, Vt, Pt);
 }
 
 // Calculate the jerk, acceleration, velocity and position at time time_now when running the decreasing jerk magnitude time segment based on a raised cosine profile
@@ -879,15 +960,17 @@ void SCurve::calc_javp_for_segment_decr_jerk(float time_now, float tj, float Jm,
         Pt = P0;
         return;
     }
-    const float Alpha = Jm * 0.5f;
-    const float Beta = M_PI / tj;
-    const float AT = Alpha * tj;
-    const float VT = Alpha * ((tj * tj) * 0.5f - 2.0f / (Beta * Beta));
-    const float PT = Alpha * ((-1.0f / (Beta * Beta)) * tj + (1.0f / 6.0f) * (tj * tj * tj));
-    Jt = Alpha * (1.0f - cosf(Beta * (time_now + tj)));
-    At = (A0 - AT) + Alpha * (time_now + tj) - (Alpha / Beta) * sinf(Beta * (time_now + tj));
-    Vt = (V0 - VT) + (A0 - AT) * time_now + 0.5f * Alpha * (time_now + tj) * (time_now + tj) + (Alpha / (Beta * Beta)) * cosf(Beta * (time_now + tj)) - Alpha / (Beta * Beta);
-    Pt = (P0 - PT) + (V0 - VT) * time_now + 0.5f * (A0 - AT) * (time_now * time_now) + (-Alpha / (Beta * Beta)) * (time_now + tj) + (Alpha / 6.0f) * (time_now + tj) * (time_now + tj) * (time_now + tj) + (Alpha / (Beta * Beta * Beta)) * sinf(Beta * (time_now + tj));
+    // the second half of a raised cosine jerk, from 2 * alpha down to zero:
+    // the first half, from its kinematics at the half (AT, VT, PT) onwards
+    const Seconds t = time_now * second;
+    const Seconds half = tj * second;
+    const MetresPerSecondCubed alpha = Jm * 0.5f * metre_per_second_cubed;
+    const Frequency beta = float(M_PI) / half;
+    const Kinematics at_half{alpha * half,
+                             alpha * ((half * half) * 0.5f - 2.0f / (beta * beta)),
+                             alpha * ((-1.0f / (beta * beta)) * half + (1.0f / 6.0f) * (half * half * half))};
+    const MetresPerSecondCubed jerk = alpha * (1.0f - cosf((beta * (t + half)).numerical_value_in(mp_units::one)));
+    output(jerk, transition(t) * (kinematics(A0, V0, P0) - at_half) + raised_cosine_jerk(alpha, beta, t + half), Jt, At, Vt, Pt);
 }
 
 // generate the segments for a path of length L
