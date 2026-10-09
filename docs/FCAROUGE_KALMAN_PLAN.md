@@ -551,7 +551,7 @@ of the normal equations, and the coefficients in y/x^(3-i), all untyped.
 2. Remove workarounds once their findings are fixed upstream (in-place accumulation for F28, `ElementType`
    dispatch for F20, consistency check for F32, the `cstdio` declarations for F2 if `<print>` becomes
    opt-in).
-3. Continue the inventory: Airspeed, EKFGSF, EKF2/EKF3.
+3. Continue the inventory: EKFGSF, EKF2/EKF3.
 
 ### Precision landing filter (`AC_PrecLand/PosVelEKF`)
 
@@ -567,6 +567,21 @@ of the normal equations, and the coefficients in y/x^(3-i), all untyped.
 - Validation from a clean worktree: unit tests (g++ 15, clang 20), WebAssembly, `Copter.PrecisionLanding`
   and `PrecisionLoiterCompanion` pass (0.35 m from target, as before). CubeOrange copter +2320 B code,
   +40 B data; MatekF405 unchanged (no precision landing).
+
+### Airspeed ratio calibration (`AP_Airspeed/Airspeed_Calibration`)
+
+- Extended Kalman filter over typed `[wind N m/s, wind E m/s, scale]`, output true airspeed (m/s), callable
+  H and observation of the ground velocity, identity transition with constant process noise. The
+  Jacobian's `1/sqrt(SH1)` is in s/m: a first, untyped draft dropped that unit and the types caught it.
+  Symmetrization, non-negative diagonal, state limits and the small airspeed guard are kept. `AP_Airspeed`
+  uses accessors (`set_scale`, `get_state`, `get_variances`) instead of the members.
+- Fixed storage, constructed on first use (F21). Filter sizes measured: 180 bytes here, 116 for the
+  precision landing filter (its storage reduced from 160 to 120 bytes); F35.
+- Equivalence over 100 random 300 s calibrations: scale within 1.8e-7, wind 1.4e-5 m/s, variances 1.4e-5
+  relative. `test_airspeed_calibration` (global object, circle in wind) passes with the old and new filter,
+  g++ 15 and clang 20; WebAssembly builds; `Plane.AIRSPEED_AUTOCAL` passes from a clean build, ratio resets
+  1.242/3.307 and 1.245/3.279 against 1.242/3.306 before (run to run variation of the same order).
+- Plane +2872 B code, +64 B data on CubeOrange; +2528 B, +64 B on MatekF405.
 
 ### Validation method
 
