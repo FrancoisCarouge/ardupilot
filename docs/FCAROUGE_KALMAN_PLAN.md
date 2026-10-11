@@ -714,12 +714,124 @@ WebAssembly check uses emsdk 6.0.8, the CI version.
   its non-negative clamp. A library filter cannot reproduce the in-place update: flagged for human
   review, and the port will be compared against the previous code with this update corrected.
 
+### Stack of the library filters at 9 and 24 states: a blocker for the next filters
+
+Measured with a probe filter of N states and one output, for Cortex-M7 (Arm GCC 15.2, `-O2`,
+`-fstack-usage`), on the pinned libraries (F38). Stack frame of `update()` / `predict()` in bytes:
+
+| States | Single precision | Double precision |
+|---|---|---|
+| 3 | 680 / 304 | 1816 / 552 |
+| 9 (gimbal EKF) | 4152 / 2296 | 8200 / 4560 |
+| 24 (EKF3) | 28192 / 16152 | 56328 / 32280 |
+
+- The flight controller's main thread has 7168 bytes of stack and ArduPilot allows 1300 bytes per function
+  (2600 in the double precision EKF cores). Each scalar update of the gimbal EKF would take 4152 bytes,
+  and EKF3 could not run at all: the dense update keeps about 12.5 state-sized matrices alive, the
+  prediction 7.
+- Experiment on a scratch copy of the Kalman header (not kept): naming the intermediates so that each
+  statement holds few temporaries gives 2448 / 1968 at 9 states in single precision and 32896 / 27672 at
+  24 in double; the simple covariance update instead of the Joseph form brings `update()` to 1432 and
+  18864. Useful, not sufficient: the remaining frames are the matrices returned by value by every typed
+  operation (F28).
+- Consequence for the plan: the gimbal EKF and Phases 7 and 8 wait for upstream work on evaluation in
+  place, in TypedLinearAlgebra (operations writing into an existing matrix, without `<linalg>`) and in
+  Kalman (update and prediction written with them, scalar sequential updates, a replaceable covariance
+  prediction). The small filters already ported (4 states and fewer) are within the limits, with the
+  EKFGSF exception documented above.
+
 ### Next (as of 2026-10-11)
 
 1. Watch PR 3 CI on the new commits; re-run the jobs that only failed on Docker Hub pulls.
-2. `SoloGimbalEKF`, the last small filter and a rehearsal of EKF3; see the assessment below.
-3. Upstream requests, in order of what blocks ArduPilot most: stack and time of the update (F38, F37,
-   F8, F28), a two-stage update (F7), callable F and Q with a transition function (F23), repository size
-   (F36). Report the mp-units freestanding defect (F14) to mp-units.
+2. Upstream, in the FrancoisCarouge repositories (Phase 2), in order of what blocks ArduPilot most:
+   in-place typed operations (F28) and an update and prediction written with them (F38, F37), the simple
+   covariance update as an option (F8), a two-stage update and scalar sequential updates (F7), callable F
+   and Q with a transition function (F23), repository size (F36). The probe of the section above
+   measures progress. Report the mp-units freestanding defect (F14) to mp-units.
+3. `SoloGimbalEKF`, the last small filter and a rehearsal of EKF3: port it once its update fits the
+   stack; see the assessments above. Its side-by-side SITL comparison can be prepared meanwhile.
 4. Generalize `AP_LinearAlgebra::Units` to a scalar type parameter before EKF3 and EKF2.
 5. Decide the EKFGSF test ratio sign with a maintainer.
+
+## Appendix: stack probe
+
+The probe behind the stack table: a filter of `PROBE_N` states of type `PROBE_T` and one output. From the
+repository root, with the Arm GNU Toolchain on the path; the frames are read in `stack.su`.
+
+```shell
+arm-none-eabi-g++ -std=gnu++26 -O2 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb \
+  -fno-exceptions -fno-rtti -fno-threadsafe-statics -fstack-usage -c stack.cpp \
+  -DPROBE_N=9 -DPROBE_T=float \
+  -DMP_UNITS_HOSTED=0 -DMP_UNITS_API_CONTRACTS=0 -DMP_UNITS_API_THROWING_CONSTRAINTS=0 \
+  -Ilibraries -Imodules/Kalman/include -Imodules/TypedLinearAlgebra/include \
+  -Imodules/TypedLinearAlgebra/support/mp_units \
+  -isystem modules/mp-units/src/core/include -isystem modules/mp-units/src/systems/include
+```
+
+```cpp
+// stack frames of a Kalman library filter of N states and one output
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Kalman.h>
+#include <utility>
+
+#ifndef PROBE_N
+#define PROBE_N 9
+#endif
+#ifndef PROBE_T
+#define PROBE_T float
+#endif
+
+namespace {
+constexpr auto mps = mp_units::si::metre / mp_units::si::second;
+using Q = mp_units::quantity<mps, PROBE_T>;
+template <typename> struct StateOf;
+template <size_t... I> struct StateOf<std::index_sequence<I...>> {
+    template <size_t> using Element = Q;
+    using type = AP_LinearAlgebra::ColumnVector<PROBE_T, Element<I>...>;
+};
+using State = StateOf<std::make_index_sequence<PROBE_N>>::type;
+using Output = AP_LinearAlgebra::ColumnVector<PROBE_T, Q>;
+using Covariance = AP_LinearAlgebra::OuterProduct<State, State>;
+using OutputVariance = AP_LinearAlgebra::OuterProduct<Output, Output>;
+using OutputModel = AP_LinearAlgebra::Quotient<Output, State>;
+
+auto make_filter()
+{
+    using namespace fcarouge;
+    return kalman{
+        state{State{}},
+        output<Output>,
+        estimate_uncertainty{Covariance{}},
+        process_uncertainty{Covariance{}},
+        output_uncertainty{OutputVariance{}},
+        output_model{[](const State &x) -> OutputModel {
+            OutputModel h{};
+            h.template at<0>(x.template at<1>() / x.template at<2>());
+            h.template at<PROBE_N - 1>(x.template at<0>() / x.template at<1>());
+            return h;
+        }},
+        transition{[](const State &x) -> State { return x; }},
+        observation{[](const State &x) -> Output { return Output{x.template at<0>()}; }},
+        update_types<>,
+        prediction_types<>};
+}
+}
+
+using Filter = decltype(make_filter());
+extern Filter filter;
+Filter filter{make_filter()};
+
+__attribute__((noinline)) void probe_update(const Output &z)
+{
+    filter.update(z);
+}
+
+__attribute__((noinline)) void probe_predict()
+{
+    filter.predict();
+}
+
+unsigned probe_size()
+{
+    return sizeof(Filter);
+}
+```
