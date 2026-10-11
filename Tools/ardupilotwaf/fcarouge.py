@@ -26,8 +26,11 @@ def configure(cfg):
     for path in ('mp-units/src/core/include', 'mp-units/src/systems/include'):
         cfg.env.append_value('CXXFLAGS', ['-isystem', modules + path])
 
-    # freestanding mp-units: no exceptions, no contract checks
+    # freestanding mp-units: no exceptions, no contract checks. The throwing
+    # constraints, which mp-units enables by itself on compilers with
+    # constexpr exceptions (GCC 16), need its hosted headers
     cfg.env.append_value('DEFINES', [
         'MP_UNITS_HOSTED=0',
         'MP_UNITS_API_CONTRACTS=0',
+        'MP_UNITS_API_THROWING_CONSTRAINTS=0',
     ])
