@@ -147,11 +147,11 @@ low-pass/notch filters, `AP_InertialNav`, SITL `SIM_*`.
 
 Equivalence trace captured from the old implementation before removal.
 
-1. `AP_Soaring` EKF (pilot); remove `matrixN.*`. Autotests `Soaring`, `SoaringClimbRate`.
-2. `AC_PrecLand/PosVelEKF`. Autotests `PrecisionLanding`, `PrecisionLoiterCompanion`.
-3. `Airspeed_Calibration`. Autotest `AirspeedCal`.
-4. `EKFGSF_yaw`. Autotests `GSF`, `GSF_reset`, `EKFYawResetLogged`; Replay.
-5. `SoloGimbalEKF` (build only).
+1. `AP_Soaring` EKF (pilot); remove `matrixN.*`. Autotests `Soaring`, `SoaringClimbRate`. Done.
+2. `AC_PrecLand/PosVelEKF`. Autotests `PrecisionLanding`, `PrecisionLoiterCompanion`. Done.
+3. `Airspeed_Calibration`. Autotest `AirspeedCal`. Done.
+4. `EKFGSF_yaw`. Autotests `GSF`, `GSF_reset`, `EKFYawResetLogged`; Replay. Done 2026-10-11 (Replay not run).
+5. `SoloGimbalEKF` (build only). Next, see the end of the log.
 
 ### Phase 6: TypedLinearAlgebra for the other heterogeneous vectors (3-5 weeks)
 
@@ -545,7 +545,7 @@ of the normal equations, and the coefficients in y/x^(3-i), all untyped.
 - Human review requested: the sensor calibrations (accelerometer, compass, IMU temperature) and the
   thermal EKF now run on the typed code; the compass damping keeps its unit-inconsistent behaviour.
 
-### Next
+### Next (as of 2026-10-09)
 
 1. Watch PR 3 CI on the rebased branch.
 2. Remove workarounds once their findings are fixed upstream (in-place accumulation for F28, `ElementType`
@@ -618,3 +618,85 @@ TypedLinearAlgebra) would be the fitting tool; left unchanged.
 Environment notes: waf builds the directory of the last `configure` (its lock file), whatever `--out`
 says, so configure before switching build directories; the SITL autotests need pymavlink 2.4.50; the
 WebAssembly check uses emsdk 6.0.8, the CI version.
+
+### Refresh 2026-10-11: CI triage, upstream updates
+
+- PR 3 CI on ff49546737: 123 jobs passed, 92 failed. 89 of the failures are infrastructure: Docker Hub
+  refused the container pulls (`toomanyrequests`, time-outs) in "Initialize containers"; they need a
+  re-run, not a change. The other three jobs had two causes:
+  - Arch Linux (GCC 16): mp-units enables its throwing constraints by itself when the compiler has
+    constexpr exceptions, and they include a hosted-only header, which the freestanding configuration
+    rejects. `fcarouge.py` now defines `MP_UNITS_API_THROWING_CONSTRAINTS=0` (F14). Reproduced with
+    GCC 15 by forcing the macro to 1; GCC 16 itself is only available in CI.
+  - clang scan-build: with clang 20 on the C++26 build, a suppressed finding in `GCS_Common.cpp` is no
+    longer reported, and the job fails on stale suppressions; its clang 20 hash is dropped. Not run
+    locally (CI will tell).
+- The fork's `master` has not moved since the last rebase. Submodules bumped: Kalman ad6ea6dc9 (samples,
+  tests and CI only), TypedLinearAlgebra 1b91a3678; mp-units unchanged.
+- TypedLinearAlgebra 1b91a3678 verifies the types of a division (F32 fixed: `divide_positive_definite()`
+  lost its own check and the element type helpers) and of conversions between typed matrices, which
+  used to relabel the elements silently: every port so far builds unchanged under the new checks. Its
+  in-place `matrix_rank_1_update` is what the normal-equation accumulations need, but it requires
+  `<linalg>`, which no toolchain here has (F28 stays).
+- Environment: the working tree had no submodule checked out. Cloning TypedLinearAlgebra downloads
+  2.2 GB (F36); `git submodule update --init --reference <local clone> --dissociate` takes seconds. The
+  Arm toolchain, emsdk and the Python packages of the autotests (numpy, MAVProxy, pymavlink 2.4.50) do
+  not survive between sessions: a virtual environment and the Arm toolchain were set up again; emsdk
+  was not, so the WebAssembly build of this work is left to CI.
+
+### EKFGSF yaw estimator (`AP_NavEKF/EKFGSF_yaw`)
+
+- Baseline test first: `AP_NavEKF/tests/test_ekfgsf_yaw.cpp` simulates a multicopter (thrust along the
+  specific force) from rest, IMU at 400 Hz and GPS velocity at 10 Hz. Lesson: accelerations sustained
+  longer than the 5 s tilt correction bias the estimator itself (9 degrees with 15 to 25 s periods), so
+  the test uses 2 to 4 s periods; the previous code then finds the yaw within 3.2 degrees.
+- Each of the five models is a Kalman filter over typed `[velocity N m/s, velocity E m/s, yaw rad]`,
+  output the NE velocity, with a transition function (the delta velocity added in the earth frame). The
+  scalar type is `ftype`, double or float: the `AP_LinearAlgebra::Units` aliases are float only, so the
+  quantities are declared locally (to generalize before EKF3). What the library does not model is done
+  around it (F7, F23): the yaw state is overwritten from the AHRS before each prediction; the Jacobian
+  (`[1 0 -dvE; 0 1 dvN; 0 0 1]`, in (m/s)/rad) and the rotated process noise are set with `f()` and
+  `q()` before `predict()`; the innovation gate and the 5-sigma compression are computed first, and
+  the compression is passed through the measurement; variance limits and symmetry are applied on `p()`
+  after each step. The Gaussian sum (weights, density) is unchanged scalar code on the stored innovation
+  and its variance.
+- What typing and the comparison exposed: the previous chi-square test ratio takes `+S01/det` for the off
+  diagonal element of the inverse innovation variance; the inverse has `-S01/det`. Written as
+  `transposed(y) / S * y`, the estimates diverged from the previous code (models with large innovations
+  first, then weights and resets). The previous formula is kept, with a note in the code: flagged for
+  human review, as it changes when innovations are compressed.
+- Equivalence over 200 random 30 s flights (GPS noise, 40 m/s velocity spikes, restarts, airspeed
+  compensation), previous and new estimators side by side: yaw within 6e-13 rad, weights within 1e-14,
+  innovations within 5e-13 m/s in double precision; yaw within 3.4e-4 rad in single precision; the same
+  clipped models and resets in both.
+- Costs (F35, F37, F38). Memory: 58 scalars per filter instead of 18; the estimator, allocated per EKF
+  core, grows from 1712 to 3592 bytes (double) and from 856 to 1824 (single). Stack on CubeOrange: the
+  library's `update()` alone needs a 1416 byte frame, above the 1300 byte limit; it is called from a
+  function of its own and the limit raised to 1500 for this file on ChibiOS with a double precision EKF
+  (the EKF cores already raise theirs); a correction takes 1944 bytes of the 7168 byte main thread stack
+  where it took 288, a prediction 872 where it took 96. A first version with the typed
+  `H * P * transposed(H) + R` took 840 bytes more and was rewritten on quantities. Time on x86-64: five
+  corrections 1203 ns against 271, five predictions with the attitude filters 1019 ns against 550.
+  Flash: CubeOrange copter +7392 bytes, MatekF405 copter +6704.
+- Validation: `test_ekfgsf_yaw` with g++ 15 and clang 20, double and single precision (the single
+  precision SITL build needs two unrelated fixes in `SIM_ADSB.cpp` and `SIM_Scrimmage.cpp`, applied
+  locally and not kept); CubeOrange and MatekF405 copter with `-Werror`; autotests `Copter.GSF`,
+  `GSF_reset` and `EKFYawResetLogged` from a clean build. Not done: Replay, WebAssembly (CI), timing on
+  a flight controller.
+- Human review requested: sensor fusion code, the stack budget on double precision boards, and the test
+  ratio sign.
+
+### Next (as of 2026-10-11)
+
+1. Watch PR 3 CI on the new commits; re-run the jobs that only failed on Docker Hub pulls.
+2. `SoloGimbalEKF`, the last small filter and a rehearsal of EKF3: 9 error states (angle error rad,
+   velocity m/s, delta angle bias), the quaternion outside the filter, 380 lines of generated covariance
+   prediction, sequential scalar fusion of three velocities and of a heading, and an error state reset
+   after each. It needs from the library what EKF3 will (F7): scalar updates of different output types
+   on one covariance, and the stack and time of F37 and F38 at 9 states. Start with a recorded trace of
+   the current filter (it is enabled in SITL), then decide what is asked upstream first.
+3. Upstream requests, in order of what blocks ArduPilot most: stack and time of the update (F38, F37,
+   F8, F28), a two-stage update (F7), callable F and Q with a transition function (F23), repository size
+   (F36). Report the mp-units freestanding defect (F14) to mp-units.
+4. Generalize `AP_LinearAlgebra::Units` to a scalar type parameter before EKF3 and EKF2.
+5. Decide the EKFGSF test ratio sign with a maintainer.
