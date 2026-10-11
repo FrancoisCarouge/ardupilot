@@ -696,6 +696,11 @@ WebAssembly check uses emsdk 6.0.8, the CI version.
 - It needs from the Kalman library what EKF3 will (F7): scalar updates of different output types
   (m/s, rad) on one state and covariance, and the stack and time of F37 and F38 at 9 states, in single
   precision.
+- The model is available in closed form, so the generated covariance prediction can become
+  `F P F' + Q` on typed matrices: `AP_NavEKF/Models/GimbalEstimatorExample/calcF.m` (12 states, the
+  last three, delta velocity biases, unused here) and `calcQ.c`. F is the identity plus three 3x3
+  blocks (angle error propagation, velocity from angle error, angle error from delta angle bias) and Q
+  two blocks (delta angle noise, delta velocity noise rotated to NED): a use for typed blocks (F26).
 - Validation is better than "build only": the autotest `Copter.MountSolo` runs it in SITL against the
   simulated gimbal, and passes on this branch (baseline, 2026-10-11). Because of the singletons, the
   equivalence is best measured in SITL with both implementations run side by side on the same inputs,
