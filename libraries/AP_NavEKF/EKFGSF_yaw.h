@@ -103,12 +103,24 @@ private:
     // The Following declarations are used by bank of EKF's that estimate yaw angle starting from a different yaw hypothesis for each filter.
 
     struct EKF_struct {
-        ftype X[3];     // Vel North (m/s),  Vel East (m/s), yaw (rad)
-        ftype P[3][3];  // covariance matrix
         ftype S[2][2];  // N,E velocity innovation variance (m/s)^2
         ftype innov[2]; // Velocity N,E innovation (m/s)
     };
     EKF_struct EKF[N_MODELS_EKFGSF];
+
+    // The typed Kalman filter of each EKF, over the states Vel North (m/s), Vel East (m/s) and yaw (rad).
+    // Defined in EKFGSF_yaw.cpp to keep its expensive headers out of this one, and held in fixed storage.
+    struct Filter;
+    static constexpr size_t filter_size = 58 * sizeof(ftype);
+    struct {
+        alignas(8) uint8_t storage[filter_size];
+    } filter_storage[N_MODELS_EKFGSF];
+    Filter *filters[N_MODELS_EKFGSF];
+
+    // Returns the yaw state (rad) and its variance (rad^2) for the selected EKF
+    ftype yawState(const uint8_t mdl_idx) const;
+    ftype yawStateVariance(const uint8_t mdl_idx) const;
+
     bool vel_fuse_running;  // true when the bank of EKF's has started fusing GPS velocity data
     bool run_ekf_gsf;       // true when operating condition is suitable for to run the GSF and EKF models and fuse velocity data
 
@@ -121,9 +133,6 @@ private:
     // Runs the state and covariance update for the selected EKF using the GPS NE velocity measurement
     // Returns false if the sttae and covariance correction failed
     bool correct(const uint8_t mdl_idx, const Vector2F &vel, const ftype velObsVar);
-
-    // Forces symmetry on the covariance matrix for the selected EKF
-    void forceSymmetry(const uint8_t mdl_idx);
 
     // The following declarations are used  by the Gaussian Sum Filter that combines the state estimates from the bank of
     // EKF's to form a single state estimate.
