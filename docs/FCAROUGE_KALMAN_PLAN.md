@@ -686,15 +686,33 @@ WebAssembly check uses emsdk 6.0.8, the CI version.
 - Human review requested: sensor fusion code, the stack budget on double precision boards, and the test
   ratio sign.
 
+### Solo gimbal EKF (`AP_Mount/SoloGimbalEKF`): assessed, not ported yet
+
+- Structure: 9 error states (angle error rad, velocity m/s, delta angle bias rad) with the quaternion
+  kept outside the filter, 380 lines of generated covariance prediction, sequential scalar fusion of
+  the three velocity components (direct state observations) and of a compass heading (a row with three
+  non-zero elements), and a reset of the angle error into the quaternion after each fusion. It reads
+  the vehicle's AHRS, compass and clock through their singletons.
+- It needs from the Kalman library what EKF3 will (F7): scalar updates of different output types
+  (m/s, rad) on one state and covariance, and the stack and time of F37 and F38 at 9 states, in single
+  precision.
+- Validation is better than "build only": the autotest `Copter.MountSolo` runs it in SITL against the
+  simulated gimbal, and passes on this branch (baseline, 2026-10-11). Because of the singletons, the
+  equivalence is best measured in SITL with both implementations run side by side on the same inputs,
+  rather than in a unit test.
+- Found while reading, to settle before a port can be compared: the velocity fusion updates the
+  covariance in place, `Cov[row][col] -= K[row] * Cov[stateIndex][col]`, so the rows after the fused
+  state use a row already scaled by `1 - K[stateIndex]`, and are under-corrected; the symmetry forced
+  afterwards averages the error into the upper triangle. On a random 9x9 covariance the result differs
+  from `P - K H P` by 16% of the largest element before the symmetry and 8% after. The compass fusion
+  buffers `H P` first and is not affected. `fixCovariance()` also skips the first diagonal element in
+  its non-negative clamp. A library filter cannot reproduce the in-place update: flagged for human
+  review, and the port will be compared against the previous code with this update corrected.
+
 ### Next (as of 2026-10-11)
 
 1. Watch PR 3 CI on the new commits; re-run the jobs that only failed on Docker Hub pulls.
-2. `SoloGimbalEKF`, the last small filter and a rehearsal of EKF3: 9 error states (angle error rad,
-   velocity m/s, delta angle bias), the quaternion outside the filter, 380 lines of generated covariance
-   prediction, sequential scalar fusion of three velocities and of a heading, and an error state reset
-   after each. It needs from the library what EKF3 will (F7): scalar updates of different output types
-   on one covariance, and the stack and time of F37 and F38 at 9 states. Start with a recorded trace of
-   the current filter (it is enabled in SITL), then decide what is asked upstream first.
+2. `SoloGimbalEKF`, the last small filter and a rehearsal of EKF3; see the assessment below.
 3. Upstream requests, in order of what blocks ArduPilot most: stack and time of the update (F38, F37,
    F8, F28), a two-stage update (F7), callable F and Q with a transition function (F23), repository size
    (F36). Report the mp-units freestanding defect (F14) to mp-units.
