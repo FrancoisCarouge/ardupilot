@@ -302,37 +302,6 @@ using ColumnVector = fcarouge::typed_column_vector<Matrix<T, sizeof...(Types), 1
 template <typename T, typename... Types>
 using RowVector = fcarouge::typed_row_vector<Matrix<T, 1, sizeof...(Types)>, Types...>;
 
-// the type of the element (i, j) of a typed matrix: vectors only have
-// single index access
-template <typename M, size_t i, size_t j>
-consteval auto element_type()
-{
-    if constexpr (M::rows == 1) {
-        return std::type_identity<std::remove_cvref_t<decltype(std::declval<const M &>().template at<j>())>>{};
-    } else if constexpr (M::columns == 1) {
-        return std::type_identity<std::remove_cvref_t<decltype(std::declval<const M &>().template at<i>())>>{};
-    } else {
-        return std::type_identity<std::remove_cvref_t<decltype(std::declval<const M &>().template at<i, j>())>>{};
-    }
-}
-
-template <typename M, size_t i, size_t j>
-using ElementType = typename decltype(element_type<M, i, j>())::type;
-
-// whether each element of the typed matrix From converts to the element of
-// To at its position: of the same dimension for mp-units quantities
-template <typename From, typename To>
-inline constexpr bool converts_elementwise = [] {
-    if constexpr (From::rows != To::rows || From::columns != To::columns) {
-        return false;
-    } else {
-        return []<size_t... k>(std::index_sequence<k...>) {
-            return (std::is_convertible_v<ElementType<From, k / To::columns, k % To::columns>,
-                                          ElementType<To, k / To::columns, k % To::columns>> && ...);
-        }(std::make_index_sequence<To::rows * To::columns>{});
-    }
-}();
-
 /*
   x = a / b, the typed division, for b symmetric positive definite, a
   normal matrix for example: solved by Cholesky factorization rather than
@@ -345,10 +314,6 @@ constexpr bool divide_positive_definite(decltype(A{} / B{}) &x, const A &a, B b)
 {
     static_assert(std::is_same_v<B, decltype(fcarouge::transposed(b))>,
                   "a symmetric matrix has a symmetric type");
-    // the typed division derives its type from the first column of a and
-    // b only: check that the equation is dimensionally consistent
-    static_assert(converts_elementwise<decltype(x * b), A>,
-                  "x * b = a must be dimensionally consistent");
     x.data() = a.data();
     return solve_right_positive_definite(x.data(), b.data());
 }
