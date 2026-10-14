@@ -185,6 +185,36 @@ TEST(LinearAlgebraTyped, UnitVector)
     EXPECT_FLOAT_EQ(y.at<0>().numerical_value_in(cm), 400.0f);
 }
 
+TEST(LinearAlgebraTyped, View)
+{
+    using namespace mp_units::si::unit_symbols;
+    using AP_LinearAlgebra::Units::Metres;
+    using AP_LinearAlgebra::Units::MetresPerSecond;
+    using State = AP_LinearAlgebra::ColumnVector<float, Metres, MetresPerSecond>;
+    using Covariance = decltype(State{} * fcarouge::transposed(State{}));
+    // the model of a position output: unitless and s
+    using Output = AP_LinearAlgebra::ColumnVector<float, Metres>;
+    using OutputModel = decltype(Output{} / State{});
+
+    // a covariance kept in a plain array, as flight code does
+    const float raw[2][2] = {{4.0f, 1.0f}, {2.0f, 3.0f}};
+    const AP_LinearAlgebra::TypedView<Covariance> P{AP_LinearAlgebra::MatrixView<float, 2, 2>{&raw[0][0]}};
+    EXPECT_FLOAT_EQ((P.at<0, 1>().numerical_value_in(m * m / s)), 1.0f);
+
+    // the products of a view are owning typed matrices
+    OutputModel model{};
+    model.at<0>(2.0f * mp_units::one);
+    model.at<1>(5.0f * s);
+    const auto PHt = P * fcarouge::transposed(model);
+    EXPECT_FLOAT_EQ(PHt.at<0>().numerical_value_in(m * m), 13.0f);
+    EXPECT_FLOAT_EQ(PHt.at<1>().numerical_value_in(m * m / s), 19.0f);
+    const auto HP = model * P;
+    EXPECT_FLOAT_EQ(HP.at<0>().numerical_value_in(m * m), 18.0f);
+    EXPECT_FLOAT_EQ(HP.at<1>().numerical_value_in(m * m / s), 17.0f);
+    // the innovation variance of the output
+    EXPECT_FLOAT_EQ((model * PHt).at().numerical_value_in(m * m), 121.0f);
+}
+
 TEST(LinearAlgebraTyped, Milligauss)
 {
     using AP_LinearAlgebra::Units::milligauss;
@@ -194,6 +224,7 @@ TEST(LinearAlgebraTyped, Milligauss)
     const Milligauss field = 500.0f * milligauss;
     EXPECT_FLOAT_EQ(field.numerical_value_in(milligauss), 500.0f);
     EXPECT_FLOAT_EQ(field.numerical_value_in(mp_units::si::micro<mp_units::si::tesla>), 50.0f);
+    EXPECT_FLOAT_EQ(field.numerical_value_in(AP_LinearAlgebra::Units::gauss), 0.5f);
 }
 
 AP_GTEST_MAIN()
