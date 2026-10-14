@@ -26,6 +26,10 @@ Libraries: [FrancoisCarouge/Kalman](https://github.com/FrancoisCarouge/Kalman) 0
    real-world, safety-critical, embedded consumer. Every such finding is recorded in
    [FCAROUGE_FINDINGS.md](FCAROUGE_FINDINGS.md) with its evidence and a suggestion, and shared with the
    owner when found.
+4. Add strongly-typed units (mp-units quantities) where they are missing in ArduPilot's heterogeneous
+   linear algebra vectors and Kalman filters (owner, 2026-10-14): every element, intermediate term and
+   input of those computations carries its physical unit, not an opaque or unitless type, unless it is
+   genuinely dimensionless. The audit below tracks the gaps.
 
 ## Moving targets: upstream libraries and fork master
 
@@ -1007,6 +1011,29 @@ toolchains between sessions, continue.
 - Costs on CubeOrange: stack frame 72 to 1896 bytes (limit 2600), flash +6364 bytes, 320 bytes per core
   instead of 48 (F35). Not on 1 MB boards.
 
+### Objective 4, units: audit (2026-10-14)
+
+Where the typed code stood when the objective was added, and what is missing:
+
+| Place | Units now | Gap | Action |
+|---|---|---|---|
+| Thermal EKF, precision landing, airspeed calibration, EKFGSF, AGL filter | physical units inside the filter | interface takes plain floats | see below |
+| Accelerometer and compass calibrations | m/s/s, mGauss; scale and cross-axis factors unitless (correct) | none inside | none |
+| SCurve | m, m/s, m/s/s, m/s/s/s | none | none |
+| IMU temperature correction | an opaque "sensor" dimension | real units | done: m/s/s and rad/s per sensor, the sensor passed as an enum |
+| `PolyFit` (temperature learning) | opaque x and y dimensions | real units | kept: a generic fit whose header is included by `AP_InertialSensor.h`; its callers' units would have to enter that header |
+| EKF3 fusions ported so far | physical units for states, Jacobians, variances, gains; quaternion unitless (correct); sideslip observed as a ratio | inputs (noise variances, innovations) and the core's members stay plain | typed locally in each fusion; members stay plain (header cost) |
+| EKF3 optical flow, range beacon, terrain offset, covariance prediction; gimbal EKF; EKF2 | none | everything | with their Phase 7/8 ports |
+
+Typed interfaces, measured: a translation unit including mp-units' quantity and SI unit headers takes
+0.6 s and 210 MB more (g++ 15 `-O2 -fsyntax-only`), with `AP_LinearAlgebra_Units.h` 1.7 s and 390 MB, 0.2 s
+and 56 MB for `<cmath>` alone. The filter headers reach far: `PosVelEKF.h` reaches all 74 copter sources
+through `AC_PrecLand.h` and `Copter.h`, `EKFGSF_yaw.h` every EKF2 and EKF3 source, `AP_Airspeed.h` is
+included directly by 29 files. Units on these interfaces would add from tens of seconds to minutes of
+CPU time per build; they need either a lighter quantity header (F22) or a filter kept behind an opaque
+pointer so that its header does not reach the callers. Until then the units start inside the filter
+source files, at the first line of each function.
+
 ### Next (as of 2026-10-14)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
@@ -1021,6 +1048,8 @@ toolchains between sessions, continue.
    repository size (F36). Report the mp-units freestanding defects (F14) to mp-units.
 4. `SoloGimbalEKF` and EKF2: the same typed fusions over views.
 5. Decide with a maintainer: the gimbal EKF in-place covariance update.
+6. Objective 4: try one typed filter interface behind an opaque pointer (the precision landing filter,
+   used by `AC_PrecLand.cpp` only) and measure the build; extend if worthwhile.
 
 ## Appendix: stack probe
 
