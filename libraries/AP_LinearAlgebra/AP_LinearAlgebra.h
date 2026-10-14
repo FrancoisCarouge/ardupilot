@@ -354,6 +354,42 @@ using TypedView = fcarouge::typed_matrix<
     MatrixView<std::remove_cvref_t<decltype(std::declval<M>().data()(0, 0))>, M::rows, M::columns>,
     typename M::row_indexes, typename M::column_indexes>;
 
+/*
+  row i of the typed matrix m, as a typed row vector of the element types of
+  that row, and column j as a typed column vector: the product of m with an
+  observation model that selects one state, without its arithmetic. The
+  elements keep their types, so their stored values are copied as they are.
+ */
+template <size_t i, typename M>
+constexpr auto row(const M &m)
+{
+    using T = std::remove_cvref_t<decltype(m.data()(0, 0))>;
+    using Row = decltype([]<size_t... j>(std::index_sequence<j...>) {
+        return fcarouge::typed_row_vector<Matrix<T, 1, M::columns>,
+               std::remove_cvref_t<decltype(std::declval<const M &>().template at<i, j>())>...> {};
+    }(std::make_index_sequence<M::columns> {}));
+    Row r{};
+    for (size_t j = 0; j < M::columns; j++) {
+        r.data()(0, j) = m.data()(i, j);
+    }
+    return r;
+}
+
+template <size_t j, typename M>
+constexpr auto column(const M &m)
+{
+    using T = std::remove_cvref_t<decltype(m.data()(0, 0))>;
+    using Column = decltype([]<size_t... i>(std::index_sequence<i...>) {
+        return fcarouge::typed_column_vector<Matrix<T, M::rows, 1>,
+               std::remove_cvref_t<decltype(std::declval<const M &>().template at<i, j>())>...> {};
+    }(std::make_index_sequence<M::rows> {}));
+    Column c{};
+    for (size_t i = 0; i < M::rows; i++) {
+        c.data()(i, 0) = m.data()(i, j);
+    }
+    return c;
+}
+
 // a column vector whose i-th element has the i-th type
 template <typename T, typename... Types>
 using ColumnVector = fcarouge::typed_column_vector<Matrix<T, sizeof...(Types), 1>, Types...>;
