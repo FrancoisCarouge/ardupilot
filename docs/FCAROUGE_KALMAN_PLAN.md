@@ -856,8 +856,26 @@ update `P = P - K * transposed(PHt)`.
   generated code did 5 (F26). Stack frame of `FuseAirspeed()`: 96 to 1248 bytes on CubeOrange (double,
   EKF limit 2600), 32 to 656 on MatekF405 (limit 1300). Flash: +200 and +260 bytes for plane.
 - Validation: those five autotests and `Plane.AirspeedDrivers`, `Copter.GSF` from a clean build; g++ 15,
-  clang 20, Arm GCC 15.2 with `-Werror`. Not done: Replay, single precision equivalence, timing on a
-  flight controller, WebAssembly (CI). Human review requested: sensor fusion code.
+  clang 20, Arm GCC 15.2 with `-Werror`. Single precision (`autotest.py --ekf-single`, with the two
+  SITL lines of 2026-10-11 patched locally): gains within 3e-6 of the largest gain of each fusion, the
+  variance within 4e-7 and `K H P` within 2e-7, rounding; one more mask seen (magnetic field states
+  inhibited). `Plane.Replay`, whose log replay includes the airspeed and wind bits, passes. Not done:
+  timing on a flight controller, WebAssembly (CI). Human review requested: sensor fusion code.
+
+### EKF3 sideslip fusion (`NavEKF3_core::FuseSideslip`)
+
+- Same method and structure as the airspeed. The assumed zero sideslip is observed as the ratio of the
+  lateral to the forward wind relative velocity, as its innovation is computed, so the observation is
+  unitless (a radian would need an explicit conversion from the ratio in mp-units).
+- The generated intermediate terms became typed: the body forward and lateral velocities (m/s), their
+  inverse and inverse square (s/m, s^2/m^2), the quaternion products (unitless). The Jacobian elements
+  then check as unitless for the quaternion and s/m for the velocity and the wind, without any change
+  to the expressions: the generated code was consistent.
+- Equivalence in flight, about 40000 fusions over the same five autotests, masks including none and all
+  states: gains within 8e-14 of the largest gain, `K H P` within 4e-16 (double precision); 4e-5 and
+  1.2e-7 in single precision.
+- Costs: stack frame 248 to 1344 bytes on CubeOrange, 128 to 696 on MatekF405; flash -256 and +8 bytes
+  for plane. g++ 15, clang 20, Arm GCC 15.2 with `-Werror`.
 - Environment notes: `m.at<i, j>()` cannot be an argument of a function-like macro (gtest, `fmaxF`), the
   comma splits it; TypedLinearAlgebra's call form with index literals, `m(0_i, 1_i)`, can, and is the
   one to use there. clang `-Wshadow` rejects a variable named `H` where mp-units' unit symbols are
@@ -866,9 +884,9 @@ update `P = P - K * transposed(PHt)`.
 ### Next (as of 2026-10-13)
 
 1. Phase 7, continue fusion by fusion with the method of the pilot (typed beside generated in flight,
-   then replace): sideslip next (same source file, two-term Jacobian over velocity, quaternion and wind),
-   then magnetometer, velocity and position, optical flow, range beacon, body odometry, drag. Before
-   that, run the pilot in single precision and through Replay.
+   then replace): airspeed and sideslip done; next the drag fusion (same source file), then magnetometer
+   (three sequential axes, declination, yaw), velocity and position, optical flow, range beacon, body
+   odometry. The side-by-side check is generated from the previous source by a script each time.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
 3. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
    with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
