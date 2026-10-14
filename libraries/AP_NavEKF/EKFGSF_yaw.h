@@ -4,7 +4,6 @@
 
 #include <AP_NavEKF/AP_Nav_Common.h>
 #include <AP_Math/AP_Math.h>
-#include <AP_Math/vectorN.h>
 #include <AP_Logger/LogStructure.h>
 
 #define IMU_DT_MIN_SEC 0.001f // Minimum delta time between IMU samples (sec)
@@ -46,17 +45,6 @@ public:
     void Log_Write(uint64_t time_us, LogMessages id0, LogMessages id1, uint8_t core_index);
 
 private:
-
-#if MATH_CHECK_INDEXES
-    typedef VectorN<ftype,2> Vector2;
-    typedef VectorN<ftype,3> Vector3;
-    typedef VectorN<VectorN<ftype,3>,3> Matrix3;
-#else
-    typedef ftype Vector2[2];
-    typedef ftype Vector3[3];
-    typedef ftype Matrix3[3][3];
-
-#endif
 
     // Parameters
     const ftype EKFGSF_gyroNoise{1.0e-1};  // yaw rate noise used for covariance prediction (rad/sec)
