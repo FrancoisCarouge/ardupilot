@@ -1337,16 +1337,26 @@ private:
     // ---- 2-state AGL Kalman Filter ----
     // Uses bias-corrected IMU delta-velocity for prediction and downward rangefinder
     // as measurement, decoupled from the main filter's vertical position state.
-    // State: x = [hgt (m, +up), vel (m/s, +up)]
+    // State: x = [AGL height (m, +up), AGL velocity (m/s, +up)], a Kalman library filter defined in
+    // AP_NavEKF3_OptFlowFusion.cpp to keep its expensive headers out of this one, in fixed storage
     class AglKalmanFilter {
     public:
         void InitialiseVariables(ftype initialHgt);
 
-        ftype hgt;                      // AGL height estimate (m, positive up from ground)
-        ftype vel;                      // AGL velocity estimate (m/s, positive = climbing)
-        ftype cov[2][2];                // 2x2 covariance matrix (upper triangle, symmetric)
+        // AGL height (m) and velocity (m/s) estimates, and their variances
+        ftype height() const;
+        ftype velocity() const;
+        ftype heightVariance() const;
+        ftype velocityVariance() const;
+
+        struct Filter;
+        Filter *filter;                 // the filter in storage, null until the variables are initialised
         bool  valid;                    // true when RF has been fused within the last 5 s
         uint32_t lastRngFuseTime_ms;    // timestamp of last successful RF fusion into AGL KF
+
+    private:
+        static constexpr size_t storageSize = 40 * sizeof(ftype);
+        alignas(8) uint8_t storage[storageSize];
     } aglKf;
 #endif
     ftype terrainState;             // terrain position state (m)
