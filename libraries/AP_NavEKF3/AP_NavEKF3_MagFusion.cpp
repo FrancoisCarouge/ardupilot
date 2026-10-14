@@ -1113,41 +1113,44 @@ bool NavEKF3_core::fuseEulerYaw(yawFusionMethod method)
 */
 void NavEKF3_core::FuseDeclination(ftype declErr)
 {
+    using namespace NavEKF3_typed;
+    constexpr auto gauss = AP_LinearAlgebra::Units::gauss;
+    constexpr auto radian = mp_units::si::radian;
+    using Angle = Quantity<radian>;
+
     // declination error variance (rad^2)
-    const ftype R_DECL = sq(declErr);
+    const Quantity<radian * radian> R_DECL = sq(declErr) * (radian * radian);
 
     // copy required states to local variables
-    ftype magN = stateStruct.earth_magfield.x;
-    ftype magE = stateStruct.earth_magfield.y;
+    const StateView states{AP_LinearAlgebra::MatrixView<ftype, 24, 1>{&statesArray[0]}};
+    const Field magN = states.at<16>();
+    const Field magE = states.at<17>();
 
     // prevent bad earth field states from causing numerical errors or exceptions
-    if (magN < 1e-3f) {
+    if (magN.numerical_value_in(gauss) < 1e-3f) {
         return;
     }
 
     // Calculate observation Jacobian and Kalman gains
     // Calculate intermediate variables
-    const ftype HK0 = sq(magE) + sq(magN);
+    const auto HK0 = magE*magE + magN*magN;
     // if the horizontal magnetic field is too small, this calculation will be badly conditioned
-    if (HK0 < 1e-4f) {
-        return;
-    }
-    const ftype HK1 = 1.0F/(HK0);
-    const ftype HK2 = P[16][16]*magE - P[16][17]*magN;
-    const ftype HK3 = P[16][17]*magE - P[17][17]*magN;
-    const ftype HK4_denom = (sq(HK0)*R_DECL + HK2*magE - HK3*magN);
-    ftype HK4;
-    if (fabsF(HK4_denom) > 1e-6f) {
-        HK4 = HK0/HK4_denom;
-    } else {
+    if (HK0.numerical_value_in(gauss * gauss) < 1e-4f) {
         return;
     }
 
-    // Calculate the observation Jacobian
-    // Note only 2 terms are non-zero which can be used in matrix operations for calculation of Kalman gains and covariance update to significantly reduce cost
-    ftype Hfusion[24] = {};
-    Hfusion[16] = -HK1*magE;
-    Hfusion[17] = HK1*magN;
+    // Calculate the observation Jacobian, of the declination angle atan2(magE, magN)
+    ObservationModel<Angle> Hfusion{};
+    Hfusion.at<16>(-magE / HK0 * (1.0f * radian));
+    Hfusion.at<17>(magN / HK0 * (1.0f * radian));
+
+    // the innovation variance, checked as the previous expression of it multiplied by sq(HK0)
+    const CovarianceView covariance{AP_LinearAlgebra::MatrixView<ftype, 24, 24>{&P[0][0]}};
+    const auto PHt = covariance * fcarouge::transposed(Hfusion);
+    const auto S = (Hfusion * PHt).at() + R_DECL;
+    if (!(fabsF((S * HK0 * HK0).numerical_value_in(radian * radian * pow<4>(gauss))) > 1e-6f)) {
+        return;
+    }
 
     uint32_t kalman_mask = (1<<10)-1; // values to calculate in Kfusion (others are set to zero)
 
@@ -1172,10 +1175,11 @@ void NavEKF3_core::FuseDeclination(ftype declErr)
         kalman_mask |= (1<<22) | (1<<23);
     }
 
+    const auto K = PHt / S;
     for (auto i=0; i<24; i++) {
         ftype res = 0;
         if (kalman_mask & (1<<i)) {
-            res = -HK4*(P[i][16]*magE-P[i][17]*magN);
+            res = K.data()(i);
         }
         Kfusion[i] = res;
     }
@@ -1184,7 +1188,7 @@ void NavEKF3_core::FuseDeclination(ftype declErr)
     ftype magDecAng = MagDeclination();
 
     // Calculate the innovation
-    ftype innovation = atan2F(magE , magN) - magDecAng;
+    ftype innovation = atan2F(magE.numerical_value_in(gauss), magN.numerical_value_in(gauss)) - magDecAng;
 
     // limit the innovation to protect against data errors
     if (innovation > 0.5f) {
@@ -1193,16 +1197,13 @@ void NavEKF3_core::FuseDeclination(ftype declErr)
         innovation = -0.5f;
     }
 
-    // correct the covariance P = (I - K*H)*P = P - K*H*P. take advantage of
-    // the zero elements of H to reduce the number of operations.
+    // correct the covariance P = (I - K*H)*P = P - K*H*P. K*H*P is written to its
+    // array, its type checked against the covariance without being evaluated.
+    const auto HP = Hfusion * covariance;
+    static_assert(std::is_convertible_v<decltype(K * HP), Covariance>);
     for (unsigned i = 0; i<=stateIndexLim; i++) {
-        // j as the inner loop allows the compiler to hoist the KH product
-        // to save computation, and do the inner indexing more efficiently.
         for (unsigned j = 0; j<=stateIndexLim; j++) {
-            ftype res = 0;
-            res += (Kfusion[i] * Hfusion[16]) * P[16][j];
-            res += (Kfusion[i] * Hfusion[17]) * P[17][j];
-            KHP[i][j] = res;
+            KHP[i][j] = Kfusion[i] * HP.data()(j);
         }
     }
 
