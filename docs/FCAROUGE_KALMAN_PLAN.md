@@ -740,7 +740,7 @@ Measured with a probe filter of N states and one output, for Cortex-M7 (Arm GCC 
   prediction). The small filters already ported (4 states and fewer) are within the limits, with the
   EKFGSF exception documented above.
 
-### Next (as of 2026-10-11, superseded below)
+### Next (as of 2026-10-11, superseded)
 
 1. Watch PR 3 CI on the new commits; re-run the jobs that only failed on Docker Hub pulls.
 2. Upstream, in the FrancoisCarouge repositories (Phase 2), in order of what blocks ArduPilot most:
@@ -881,20 +881,60 @@ update `P = P - K * transposed(PHt)`.
   one to use there. clang `-Wshadow` rejects a variable named `H` where mp-units' unit symbols are
   visible (the henry).
 
-### Next (as of 2026-10-13)
+### 2026-10-14: owner decisions applied, drag fusion
 
-1. Phase 7, continue fusion by fusion with the method of the pilot (typed beside generated in flight,
-   then replace): airspeed and sideslip done; next the drag fusion (same source file), then magnetometer
-   (three sequential axes, declination, yaw), velocity and position, optical flow, range beacon, body
-   odometry. The side-by-side check is generated from the previous source by a script each time.
+Owner decisions of 2026-10-14: remove the generic matrix helpers, fix the EKFGSF test ratio sign, keep the
+toolchains between sessions, continue.
+
+- Toolchains: the Arm GNU Toolchain 15.2 and the autotest Python environment (numpy, MAVProxy, pymavlink
+  2.4.50) now live in the workspace, outside the repository, in `ardupilot/toolchains/`;
+  `. ardupilot/env.sh` puts them on the path.
+- CI regression after the rebase: the fork's `master` gave scan-build builds `-fno-builtin` (so that the
+  clang analyser accepts the zero initialisation flag), and with it the gcc that compiles them refuses
+  to evaluate the C library `pow`, `sqrt` and `cbrt` that mp-units calls in constant expressions;
+  scan-build stopped in `AC_PrecLand`. Scan-build builds, analysed and never run, now get no zero
+  initialisation flag. Checked locally with scan-build 20 and g++ 14.
+- `mat_inverse()`, `mat_mul()`, `mat_identity()` (`AP_Math/matrix_alg.cpp`, with a heap allocating
+  inverse) and their example are removed.
+- EKFGSF test ratio: `-S_NE / det(S)` for the off diagonal element of the inverse innovation variance.
+  Effect against the previous sign over 200 random simulated 30 s flights with spikes and restarts: the
+  same yaw error after 15 s for the multicopter flights (RMS 10.0 degrees for both), 58.7 against 59.2
+  degrees for the airspeed compensated ones (not physical in this simulation); the estimates differ
+  where the compression differs. `Copter.GSF`, `GSF_reset`, `EKFYawResetLogged` pass.
+
+### EKF3 drag fusion (`NavEKF3_core::FuseDragForces`)
+
+- Same method as the airspeed and sideslip. The drag model is typed with the documented parameter units
+  (ballistic coefficient kg/m^2, air density kg/m^3, momentum drag coefficient 1/s): the implied
+  airspeed, the derivative of the specific force (1/s) and the predicted specific force (m/s^2) check.
+  The Jacobian is in m/s^2 per quaternion unit and 1/s for velocity and wind; only the wind gains are
+  kept, as before.
+- The side-by-side check caught a port error: the previous code reads the states through references,
+  so the second axis sees the wind just corrected by the first, which is what sequential fusion
+  means; the first port copied them once before the loop (innovation variance 5e-4 relative off on
+  the second axis). Fixed by reading the states per axis.
+- Equivalence in flight, about 6000 fusions in `Copter.DeadReckoningInWind` and
+  `GPSForYawWindEstimation` (mixed bluff body and momentum drag): gains within 4e-15, innovation
+  variance, predicted specific force and `K H P` within 7e-16 (double); 2e-6, 4e-7, 2e-7, 3e-7
+  (single). The bluff body only and momentum only models are not exercised by an autotest.
+- Costs: stack frame 424 to 1432 bytes on CubeOrange (limit 2600), flash -840 bytes; 1 MB boards do not
+  have drag fusion.
+- mp-units `abs()` does not compile in the freestanding configuration (no `abs` for the representation
+  without the hosted `<cmath>`); the absolute value is taken on the numerical value (F14).
+
+### Next (as of 2026-10-14)
+
+1. Phase 7, fusion by fusion: magnetometer next (three sequential axes, then declination and yaw,
+   `AP_NavEKF3_MagFusion.cpp`), then velocity and position, optical flow, range beacon, body odometry.
+   The side-by-side check is generated from the previous source by a script, and must compare what the
+   previous code reads at each step, not only at entry.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
 3. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
    with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
    updates (F7), callable F and Q with a transition function (F23), typed blocks or sparse rows (F26),
-   repository size (F36). Report the mp-units freestanding defect (F14) to mp-units.
-4. `SoloGimbalEKF` and EKF2: the same typed fusions over views, their predictions kept as they are.
-5. Decide with a maintainer: the EKFGSF test ratio sign, the gimbal EKF in-place covariance update, and
-   the removal of `matrix_alg`.
+   repository size (F36). Report the mp-units freestanding defects (F14) to mp-units.
+4. `SoloGimbalEKF` and EKF2: the same typed fusions over views.
+5. Decide with a maintainer: the gimbal EKF in-place covariance update.
 
 ## Appendix: stack probe
 
