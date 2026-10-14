@@ -37,7 +37,7 @@
 namespace {
 
 template <auto Reference>
-using Quantity = mp_units::quantity<Reference, ftype>;
+using Quantity = AP_LinearAlgebra::Units::Quantity<Reference, ftype>;
 
 constexpr auto metre_per_second = mp_units::si::metre / mp_units::si::second;
 constexpr auto radian = mp_units::si::radian;
