@@ -14,7 +14,8 @@
  */
 
 /*
-  Single precision mp-units quantities used as typed matrix elements.
+  mp-units quantities used as typed matrix elements, in single precision
+  unless another scalar type is given.
  */
 #pragma once
 
@@ -28,8 +29,8 @@
 namespace AP_LinearAlgebra {
 namespace Units {
 
-template <auto Reference>
-using Quantity = mp_units::quantity<Reference, float>;
+template <auto Reference, typename T = float>
+using Quantity = mp_units::quantity<Reference, T>;
 
 using Unitless = Quantity<mp_units::one>;
 using Metres = Quantity<mp_units::si::metre>;
