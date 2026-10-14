@@ -9,6 +9,130 @@
 #include <GCS_MAVLink/GCS.h>
 #include <AP_DAL/AP_DAL.h>
 
+#if EK3_FEATURE_OPTFLOW_AGL_KF
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Kalman.h>
+#include "AP_NavEKF3_typed.h"
+
+#include <new>
+
+namespace {
+
+using NavEKF3_typed::Quantity;
+using NavEKF3_typed::Position;
+using NavEKF3_typed::Velocity;
+constexpr auto metre = mp_units::si::metre;
+constexpr auto second = mp_units::si::second;
+constexpr auto metre_per_second = metre / second;
+constexpr auto acceleration = metre / (second * second);
+using Seconds = Quantity<second>;
+using HeightVariance = Quantity<metre * metre>;
+using VelocityVariance = Quantity<metre_per_second * metre_per_second>;
+
+// state: AGL height and velocity, positive up; input: the vertical acceleration, positive down;
+// output: the tilt corrected rangefinder height
+using AglState = AP_LinearAlgebra::ColumnVector<ftype, Position, Velocity>;
+using AglInput = AP_LinearAlgebra::ColumnVector<ftype, Quantity<acceleration>>;
+using AglOutput = AP_LinearAlgebra::ColumnVector<ftype, Position>;
+using AglCovariance = AP_LinearAlgebra::OuterProduct<AglState, AglState>;
+using AglOutputVariance = AP_LinearAlgebra::OuterProduct<AglOutput, AglOutput>;
+using AglTransition = AP_LinearAlgebra::Quotient<AglState, AglState>;
+using AglControl = AP_LinearAlgebra::Quotient<AglState, AglInput>;
+
+/*
+  h(k+1) = h(k) + v(k)*dt, v(k+1) = v(k) - a*dt, so
+  F = |1 dt|   G = |  0|   Q = |Qhgt     0|
+      |0  1|       |-dt|       |   0  Qvel|
+  and the rangefinder height measurement, H = [1 0]
+ */
+auto make_agl_filter()
+{
+    using namespace fcarouge;
+    return kalman{
+        state{AglState{}},
+        output<AglOutput>,
+        input<AglInput>,
+        estimate_uncertainty{AglCovariance{}},
+        process_uncertainty{[](const AglState &, const Seconds &, const HeightVariance &Qhgt, const VelocityVariance &Qvel) -> AglCovariance {
+            AglCovariance q{};
+            q.at<0, 0>(Qhgt);
+            q.at<1, 1>(Qvel);
+            return q;
+        }},
+        // set by each measurement update
+        output_uncertainty{AglOutputVariance{}},
+        state_transition{[](const AglInput &, const Seconds &dt, const HeightVariance &, const VelocityVariance &) -> AglTransition {
+            AglTransition f{};
+            f.at<0, 0>(ftype(1) * mp_units::one);
+            f.at<0, 1>(dt);
+            f.at<1, 1>(ftype(1) * mp_units::one);
+            return f;
+        }},
+        input_control{[](const Seconds &dt, const HeightVariance &, const VelocityVariance &) -> AglControl {
+            AglControl g{};
+            g.at<1>(-dt);
+            return g;
+        }},
+        prediction_types<Seconds, HeightVariance, VelocityVariance>};
+}
+
+} // namespace
+
+// the filter does not exist until the variables are initialised: its values then read as zero,
+// as the members of the zero allocated core it replaces did
+struct NavEKF3_core::AglKf {
+    decltype(make_agl_filter()) kalman{make_agl_filter()};
+};
+
+void NavEKF3_core::resetAglKf()
+{
+    static_assert(sizeof(AglKf) <= aglKfSize, "NavEKF3_core::aglKfSize is too small for the AGL filter");
+    static_assert(alignof(AglKf) <= 8, "NavEKF3_core::aglKfStorage is under-aligned for the AGL filter");
+    static_assert(std::is_trivially_destructible_v<AglKf>, "NavEKF3_core does not destroy the AGL filter");
+    // constructed here, at run time, not with the object: the Kalman library's identity and zero values
+    // are dynamically initialized variables
+    aglKf = new (aglKfStorage) AglKf;
+    auto &kalman = aglKf->kalman;
+    // assume sitting on ground at minimum range, 5 m initial std-dev in height, 1 m/s in velocity
+    kalman.x(AglState{rngOnGnd * metre, ftype(0) * metre_per_second});
+    AglCovariance p{};
+    p.at<0, 0>(ftype(25) * (metre * metre));
+    p.at<1, 1>(ftype(1) * (metre_per_second * metre_per_second));
+    kalman.p(p);
+}
+
+ftype NavEKF3_core::aglKfHeight() const
+{
+    if (aglKf == nullptr) {
+        return 0;
+    }
+    return aglKf->kalman.x().at<0>().numerical_value_in(metre);
+}
+
+ftype NavEKF3_core::aglKfVelocity() const
+{
+    if (aglKf == nullptr) {
+        return 0;
+    }
+    return aglKf->kalman.x().at<1>().numerical_value_in(metre_per_second);
+}
+
+ftype NavEKF3_core::aglKfHeightVariance() const
+{
+    if (aglKf == nullptr) {
+        return 0;
+    }
+    return aglKf->kalman.p().at<0, 0>().numerical_value_in(metre * metre);
+}
+
+ftype NavEKF3_core::aglKfVelocityVariance() const
+{
+    if (aglKf == nullptr) {
+        return 0;
+    }
+    return aglKf->kalman.p().at<1, 1>().numerical_value_in(metre_per_second * metre_per_second);
+}
+#endif // EK3_FEATURE_OPTFLOW_AGL_KF
+
 #define P (const_cast<const Matrix24 &>(Pmut))
 
 /********************************************************
@@ -322,7 +446,7 @@ void NavEKF3_core::FuseOptFlow(const of_elements &ofDataDelayed, bool really_fus
     // instead of terrainState-pd which can drift when the main filter's vertical position
     // state is unreliable (e.g. poor altitude source, sensor outage, or ground effect).
     if (frontend->option_is_enabled(NavEKF3::Option::AglKfForOptflow) && aglKfValid) {
-        heightAboveGndEst = MAX(aglKfH, rngOnGnd);
+        heightAboveGndEst = MAX(aglKfHeight(), rngOnGnd);
     }
 #endif
 
@@ -780,36 +904,10 @@ bool NavEKF3_core::getOptFlowSample(uint32_t& timestamp_ms, Vector2f& flowRate, 
  */
 void NavEKF3_core::UpdateAglKf()
 {
+    auto &kalman = aglKf->kalman;
     const ftype imuDt = imuDataDelayed.delVelDT;
     const uint32_t aglKfRngTimeout_ms = 5000;   // mark filter invalid / hard-reset after this gap without RF fusion
 
-    // h_agl(k+1) = h_agl(k) + v_agl(k)*imuDt
-    aglKfH += aglKfV * imuDt;
-
-    // v_agl(k+1) = v_agl(k) - velDotNED.z*imuDt
-    // velDotNED.z is NED-down acceleration (positive = downward, includes gravity).
-    // Negate: downward acceleration reduces AGL rate.
-    aglKfV -= velDotNED.z * imuDt;
-
-    // First-order decay of v_agl toward zero when RF is absent (tau = 2 s).
-    // Without range measurements v_agl is unobservable; accumulated IMU bias
-    // error will cause it to drift, pulling h_agl to the floor during
-    // subsequent climbs.  The decay limits that drift.
-    // At the aglKfRngTimeout_ms validity timeout (5 s), |v| is at most
-    // exp(-5/2) ~ 8% of its value at last RF fusion, so the hard reset finds v near zero.
-    if (!rangeDataToFuse) {
-        const ftype tauV = 2.0f;
-        aglKfV *= expf(-imuDt / tauV);
-    }
-
-    // AGL cannot go below the on-ground sensor reading
-    aglKfH = MAX(aglKfH, rngOnGnd);
-
-    // ----- Covariance prediction: P = F*P*F' + Q -----
-    //
-    // F = [[1, imuDt],   state-transition matrix
-    //      [0,  1]]
-    //
     // Process noise Q:
     //
     // Qhgt — terrain-induced AGL uncertainty during forward flight.
@@ -828,22 +926,36 @@ void NavEKF3_core::UpdateAglKf()
     //
     const ftype horizDistSq = MIN(sq(stateStruct.velocity.x * imuDt)
                                   + sq(stateStruct.velocity.y * imuDt), 1.0f);  // cap at 1 m²
-    const ftype Qvel = sq(frontend->_accNoise * imuDt);   // matches CovariancePrediction: sq(imuDt*accNoise)
-    const ftype Qhgt = sq(frontend->_terrGradMax) * horizDistSq;
+    const VelocityVariance Qvel = sq(frontend->_accNoise * imuDt) * (metre_per_second * metre_per_second);   // matches CovariancePrediction: sq(imuDt*accNoise)
+    const HeightVariance Qhgt = sq(frontend->_terrGradMax) * horizDistSq * (metre * metre);
 
-    // Capture before overwrite (P is symmetric, so P[0][1] == P[1][0])
-    const ftype P00 = aglKfP[0][0];
-    const ftype P01 = aglKfP[0][1];   // == P[1][0]
-    const ftype P11 = aglKfP[1][1];
+    // h_agl(k+1) = h_agl(k) + v_agl(k)*imuDt
+    // v_agl(k+1) = v_agl(k) - velDotNED.z*imuDt
+    // velDotNED.z is NED-down acceleration (positive = downward, includes gravity).
+    // Negate: downward acceleration reduces AGL rate.
+    // and P = F*P*F' + Q
+    kalman.predict(imuDt * second, Qhgt, Qvel, AglInput{velDotNED.z * acceleration});
 
-    // Expanded F*P*F' + Q:
-    aglKfP[0][0] = P00 + imuDt * (P01 + P01) + sq(imuDt) * P11 + Qhgt;
-    aglKfP[0][1] = aglKfP[1][0] = P01 + imuDt * P11;
-    aglKfP[1][1] = P11 + Qvel;
+    // First-order decay of v_agl toward zero when RF is absent (tau = 2 s).
+    // Without range measurements v_agl is unobservable; accumulated IMU bias
+    // error will cause it to drift, pulling h_agl to the floor during
+    // subsequent climbs.  The decay limits that drift.
+    // At the aglKfRngTimeout_ms validity timeout (5 s), |v| is at most
+    // exp(-5/2) ~ 8% of its value at last RF fusion, so the hard reset finds v near zero.
+    Velocity aglKfV = kalman.x().at<1>();
+    if (!rangeDataToFuse) {
+        const ftype tauV = 2.0f;
+        aglKfV *= expf(-imuDt / tauV);
+    }
+
+    // AGL cannot go below the on-ground sensor reading
+    kalman.x(AglState{MAX(kalman.x().at<0>().numerical_value_in(metre), rngOnGnd) * metre, aglKfV});
 
     // Cap covariance to prevent runaway during prolonged RF absence
-    aglKfP[0][0] = MIN(aglKfP[0][0], 100.0f);  // 10 m std-dev cap
-    aglKfP[1][1] = MIN(aglKfP[1][1], 100.0f);  // 10 m/s std-dev cap
+    AglCovariance aglKfP{kalman.p()};
+    aglKfP.at<0, 0>(MIN((aglKfP.at<0, 0>().numerical_value_in(metre * metre)), 100.0f) * (metre * metre));  // 10 m std-dev cap
+    aglKfP.at<1, 1>(MIN((aglKfP.at<1, 1>().numerical_value_in(metre_per_second * metre_per_second)), 100.0f) * (metre_per_second * metre_per_second));  // 10 m/s std-dev cap
+    kalman.p(aglKfP);
 
     // mark invalid if RF has been absent too long
     if (!rangeDataToFuse) {
@@ -861,12 +973,12 @@ void NavEKF3_core::UpdateAglKf()
     // After the timeout of IMU-only propagation, vertical velocity drift makes the
     // prediction unreliable.  Re-initialise directly from the rangefinder.
     if (imuSampleTime_ms - lastAglRngFuseTime_ms > aglKfRngTimeout_ms) {
-        // Tilt-corrected AGL directly from rangefinder reading
-        aglKfH = MAX(rangeDataDelayed.rng * prevTnb.c.z, rngOnGnd);
-        aglKfV = 0.0f;                          // assume stationary on reset
-        aglKfP[0][0] = sq(frontend->_rngNoise); // initialise h uncertainty to RF noise
-        aglKfP[0][1] = aglKfP[1][0] = 0.0f;
-        aglKfP[1][1] = 1.0f;                    // 1 m/s velocity uncertainty after reset
+        // Tilt-corrected AGL directly from rangefinder reading, assume stationary on reset
+        kalman.x(AglState{MAX(rangeDataDelayed.rng * prevTnb.c.z, rngOnGnd) * metre, ftype(0) * metre_per_second});
+        AglCovariance p{};
+        p.at<0, 0>(sq(frontend->_rngNoise) * (metre * metre)); // initialise h uncertainty to RF noise
+        p.at<1, 1>(ftype(1) * (metre_per_second * metre_per_second)); // 1 m/s velocity uncertainty after reset
+        kalman.p(p);
         lastAglRngFuseTime_ms = imuSampleTime_ms;
         aglKfValid = true;
         return;  // skip measurement update this cycle (just used the reading for reset)
@@ -877,51 +989,41 @@ void NavEKF3_core::UpdateAglKf()
     // Observation model: z = h_agl,  H = [1, 0]
     //   z_meas = rng * cos(tilt) = rng * prevTnb.c.z
     //
-    const ftype hgtMeas = MAX(rangeDataDelayed.rng * prevTnb.c.z, rngOnGnd);
+    const Position hgtMeas = MAX(rangeDataDelayed.rng * prevTnb.c.z, rngOnGnd) * metre;
 
     // Measurement noise variance R (reuse EK3_RNG_M_NSE)
-    const ftype measNoiseVar = sq(frontend->_rngNoise);
+    const HeightVariance measNoiseVar = sq(frontend->_rngNoise) * (metre * metre);
 
-    // Innovation and innovation covariance
+    // Innovation and innovation covariance, as the filter update computes them, to gate the measurement
     // hgtInnov = hgtMeas - H*x = hgtMeas - h_agl
     // innovVar = H*P*H' + R    = P[0][0] + R
-    const ftype hgtInnov = hgtMeas - aglKfH;
-    const ftype innovVar = aglKfP[0][0] + measNoiseVar;
+    const Position hgtInnov = hgtMeas - kalman.x().at<0>();
+    const HeightVariance innovVar = kalman.p().at<0, 0>() + measNoiseVar;
 
     // reject outliers (RF glitches, specular reflections, etc.)
     // gate is expressed as a multiplier on the 1-sigma bound.
     const ftype innovGate = MAX(0.01f * (ftype)frontend->_rngInnovGate, 1.0f);
-    if (sq(hgtInnov) > sq(innovGate) * innovVar) {
+    if (hgtInnov * hgtInnov > sq(innovGate) * innovVar) {
         // Innovation too large, likely a glitch.  Inflate both height and velocity
         // uncertainty so the next valid reading can correct both states more aggressively.
-        aglKfP[0][0] = MIN(aglKfP[0][0] * 2.0f, 100.0f);
-        aglKfP[1][1] = MIN(aglKfP[1][1] * 2.0f, 100.0f);
+        AglCovariance p{kalman.p()};
+        p.at<0, 0>(MIN((p.at<0, 0>().numerical_value_in(metre * metre)) * 2.0f, 100.0f) * (metre * metre));
+        p.at<1, 1>(MIN((p.at<1, 1>().numerical_value_in(metre_per_second * metre_per_second)) * 2.0f, 100.0f) * (metre_per_second * metre_per_second));
+        kalman.p(p);
         return;
     }
 
-    // Kalman gain:  K = P*H' / innovVar = [P[0][0]/innovVar, P[1][0]/innovVar]'
-    // (H = [1, 0], so P*H' = first column of P)
-    const ftype Kh = aglKfP[0][0] / innovVar;
-    const ftype Kv = aglKfP[1][0] / innovVar;
+    // Kalman gain K = P*H' / innovVar, state update x += K * hgtInnov and covariance update in Joseph
+    // form P = (I-KH)*P*(I-KH)' + K*R*K'
+    kalman.r(AglOutputVariance{measNoiseVar});
+    kalman.update(AglOutput{hgtMeas});
 
-    // State update:  x += K * hgtInnov
-    aglKfH += Kh * hgtInnov;
-    aglKfV += Kv * hgtInnov;
-    aglKfH  = MAX(aglKfH, rngOnGnd);  // enforce physical constraint after update
-
-    // Covariance update P = (I-KH)*P*(I-KH)' + K*R*K'
-    // With H = [1, 0], (I-KH) = [[1-Kh, 0], [-Kv, 1]]:
-    //   P[0][0] = (1-Kh)²*Phh + Kh²*R
-    //   P[0][1] = (1-Kh)*(Phv - Kv*Phh) + Kh*Kv*R
-    //   P[1][1] = Pvv - 2*Kv*Phv + Kv²*innovVar
-    const ftype oneMinusKh = 1.0f - Kh;
-    const ftype Phh = aglKfP[0][0];
-    const ftype Phv = aglKfP[0][1];
-    const ftype Pvv = aglKfP[1][1];
-
-    aglKfP[0][0] = MAX(sq(oneMinusKh) * Phh + sq(Kh) * measNoiseVar, 0.0f);
-    aglKfP[0][1] = aglKfP[1][0] = oneMinusKh * (Phv - Kv * Phh) + Kh * Kv * measNoiseVar;
-    aglKfP[1][1] = MAX(Pvv - 2.0f * Kv * Phv + sq(Kv) * innovVar, 0.0f);
+    // enforce physical constraint after update
+    kalman.x(AglState{MAX(kalman.x().at<0>().numerical_value_in(metre), rngOnGnd) * metre, kalman.x().at<1>()});
+    AglCovariance p{kalman.p()};
+    p.at<0, 0>(MAX((p.at<0, 0>().numerical_value_in(metre * metre)), 0.0f) * (metre * metre));
+    p.at<1, 1>(MAX((p.at<1, 1>().numerical_value_in(metre_per_second * metre_per_second)), 0.0f) * (metre_per_second * metre_per_second));
+    kalman.p(p);
 
     lastAglRngFuseTime_ms = imuSampleTime_ms;
     aglKfValid = true;
