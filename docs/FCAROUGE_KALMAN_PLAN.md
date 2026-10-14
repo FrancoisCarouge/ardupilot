@@ -936,11 +936,30 @@ toolchains between sessions, continue.
 - Costs: stack frame 712 to 1752 bytes on CubeOrange (limit 2600), 328 to 912 on MatekF405 (limit
   1300); flash -1348 and -784 bytes.
 
+### 2026-10-14 (afternoon): CI, library bumps, declination and yaw fusions
+
+- PR 3 CI on db9fbcc200: 213 jobs passed, 2 failed. Scan-build (the fix of the morning) and WebAssembly
+  pass. The failures are not this work: the Renode quadplane flight could not download its model data
+  ("Name or service not known"), and `QuadPlane.QAUTOTUNE` ("Failed to level") failed in the
+  pull-request run but passed in the push run of the same commit, and twice locally.
+- Submodules bumped: Kalman 6b54da0bc (setters taking several values, printer), TypedLinearAlgebra
+  db34d69db (`matrix_inf_norm`). The typed unit tests, copter and plane build unchanged.
+- Declination fusion (`FuseDeclination`): observed in radians, Jacobian in rad/Gauss over the North and
+  East field states; its conditioning test is kept as the previous denominator, `S * HK0^2`, against the
+  same threshold. About 8000 fusions in four copter autotests: gains within 1.2e-14 of the largest,
+  `K H P` within 9e-17 (double); 1.9e-6 and 3.4e-8 (single). Stack frame 64 to 1248 bytes on CubeOrange,
+  56 to 640 on MatekF405; flash +392 and +352 bytes.
+- Yaw fusion (`fuseEulerYaw`): the generated quaternion Jacobian and its singularity handling are kept,
+  as there are no units to check in it; the observation model (rad per quaternion unit), variance and
+  gain are typed, gains written up to `stateIndexLim` as before. About 6400 fusions with magnetometer,
+  GPS and static yaw (not GSF, not external navigation): within 6e-16 (double), 2.3e-7 (single). Stack
+  frame 288 to 1408 bytes on CubeOrange, 128 to 696 on MatekF405; flash +456 and +292 bytes.
+
 ### Next (as of 2026-10-14)
 
-1. Phase 7, fusion by fusion: airspeed, sideslip, drag and 3-axis magnetometer done; next the
-   declination and yaw fusions (`AP_NavEKF3_MagFusion.cpp`), then velocity and position, optical flow,
-   range beacon, body odometry.
+1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination and yaw done;
+   next velocity and position (`AP_NavEKF3_PosVelFusion.cpp`), then optical flow, range beacon, body
+   odometry.
    The side-by-side check is generated from the previous source by a script, and must compare what the
    previous code reads at each step, not only at entry.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
