@@ -215,6 +215,35 @@ TEST(LinearAlgebraTyped, View)
     EXPECT_FLOAT_EQ((model * PHt).at().numerical_value_in(m * m), 121.0f);
 }
 
+TEST(LinearAlgebraTyped, RowColumn)
+{
+    using namespace mp_units::si::unit_symbols;
+    using AP_LinearAlgebra::Units::Metres;
+    using AP_LinearAlgebra::Units::MetresPerSecond;
+    using State = AP_LinearAlgebra::ColumnVector<float, Metres, MetresPerSecond>;
+    using Covariance = decltype(State{} * fcarouge::transposed(State{}));
+    using Output = AP_LinearAlgebra::ColumnVector<float, MetresPerSecond>;
+    using OutputModel = decltype(Output{} / State{});
+
+    const float raw[2][2] = {{4.0f, 1.0f}, {2.0f, 3.0f}};
+    const AP_LinearAlgebra::TypedView<Covariance> P{AP_LinearAlgebra::MatrixView<float, 2, 2>{&raw[0][0]}};
+
+    // an observation of the velocity state
+    OutputModel model{};
+    model.at<1>(1.0f * mp_units::one);
+
+    // the selections have the values and convert to the types of the products
+    const decltype(model * P) HP{AP_LinearAlgebra::row<1>(P)};
+    const decltype(P * fcarouge::transposed(model)) PHt{AP_LinearAlgebra::column<1>(P)};
+    const auto HP_product = model * P;
+    const auto PHt_product = P * fcarouge::transposed(model);
+    EXPECT_FLOAT_EQ(HP.at<0>().numerical_value_in(m * m / s), HP_product.at<0>().numerical_value_in(m * m / s));
+    EXPECT_FLOAT_EQ(HP.at<1>().numerical_value_in(m * m / s / s), HP_product.at<1>().numerical_value_in(m * m / s / s));
+    EXPECT_FLOAT_EQ(PHt.at<0>().numerical_value_in(m * m / s), PHt_product.at<0>().numerical_value_in(m * m / s));
+    EXPECT_FLOAT_EQ(PHt.at<1>().numerical_value_in(m * m / s / s), 3.0f);
+    EXPECT_FLOAT_EQ(HP.at<0>().numerical_value_in(m * m / s), 2.0f);
+}
+
 TEST(LinearAlgebraTyped, Milligauss)
 {
     using AP_LinearAlgebra::Units::milligauss;
