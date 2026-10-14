@@ -26,6 +26,8 @@ Libraries: [FrancoisCarouge/Kalman](https://github.com/FrancoisCarouge/Kalman) 0
    real-world, safety-critical, embedded consumer. Every such finding is recorded in
    [FCAROUGE_FINDINGS.md](FCAROUGE_FINDINGS.md) with its evidence and a suggestion, and shared with the
    owner when found.
+   Changes of this branch that can go to ArduPilot on their own are listed, prioritized, in
+   [FCAROUGE_PULL_REQUESTS.md](FCAROUGE_PULL_REQUESTS.md).
 4. Add strongly-typed units (mp-units quantities) where they are missing in ArduPilot's heterogeneous
    linear algebra vectors and Kalman filters (owner, 2026-10-14): every element, intermediate term and
    input of those computations carries its physical unit, not an opaque or unitless type, unless it is
@@ -1021,6 +1023,7 @@ Where the typed code stood when the objective was added, and what is missing:
 | Accelerometer and compass calibrations | m/s/s, mGauss; scale and cross-axis factors unitless (correct) | none inside | none |
 | SCurve | m, m/s, m/s/s, m/s/s/s | none | none |
 | IMU temperature correction | an opaque "sensor" dimension | real units | done: m/s/s and rad/s per sensor, the sensor passed as an enum |
+| Precision landing filter interface | plain floats | units | done: typed interface, `AC_PrecLand` holds the filters by pointer, `AP_LinearAlgebra_Quantity.h` (1 s, 220 MB) instead of the full units header |
 | `PolyFit` (temperature learning) | opaque x and y dimensions | real units | kept: a generic fit whose header is included by `AP_InertialSensor.h`; its callers' units would have to enter that header |
 | EKF3 fusions ported so far | physical units for states, Jacobians, variances, gains; quaternion unitless (correct); sideslip observed as a ratio | inputs (noise variances, innovations) and the core's members stay plain | typed locally in each fusion; members stay plain (header cost) |
 | EKF3 optical flow, range beacon, terrain offset, covariance prediction; gimbal EKF; EKF2 | none | everything | with their Phase 7/8 ports |
@@ -1048,8 +1051,12 @@ source files, at the first line of each function.
    repository size (F36). Report the mp-units freestanding defects (F14) to mp-units.
 4. `SoloGimbalEKF` and EKF2: the same typed fusions over views.
 5. Decide with a maintainer: the gimbal EKF in-place covariance update.
-6. Objective 4: try one typed filter interface behind an opaque pointer (the precision landing filter,
-   used by `AC_PrecLand.cpp` only) and measure the build; extend if worthwhile.
+6. Objective 4: done for the precision landing filter (typed interface, filters allocated by
+   `AC_PrecLand::init()` so that the unit headers reach two sources); next the airspeed calibration,
+   EKFGSF and AGL filters the same way.
+7. Keep [FCAROUGE_PULL_REQUESTS.md](FCAROUGE_PULL_REQUESTS.md) current: recheck the five against
+   upstream `master` before opening any, add candidates as they appear (the EKFGSF test ratio sign and
+   the gimbal EKF covariance update, once a maintainer agrees).
 
 ## Appendix: stack probe
 
