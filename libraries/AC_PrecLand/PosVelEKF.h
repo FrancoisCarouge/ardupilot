@@ -1,6 +1,7 @@
 #pragma once
 
 #include <AP_Common/AP_Common.h>
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Quantity.h>
 
 #include <stdint.h>
 
@@ -11,6 +12,13 @@
 */
 class PosVelEKF {
 public:
+    using Seconds = AP_LinearAlgebra::Units::Seconds;
+    using Metres = AP_LinearAlgebra::Units::Metres;
+    using MetresPerSecond = AP_LinearAlgebra::Units::MetresPerSecond;
+    using SquareMetres = AP_LinearAlgebra::Units::SquareMetres;
+    using SquareMetresPerSecondSquared = AP_LinearAlgebra::Units::SquareMetresPerSecondSquared;
+    using Unitless = AP_LinearAlgebra::Units::Unitless;
+
     PosVelEKF();
     ~PosVelEKF();
 
@@ -18,24 +26,24 @@ public:
 
     // Initialize the covariance and state matrix
     // This is called when the landing target is located for the first time or it was lost, then relocated
-    void init(float pos, float posVar, float vel, float velVar);
+    void init(Metres pos, SquareMetres posVar, MetresPerSecond vel, SquareMetresPerSecondSquared velVar);
 
     // This functions runs the Prediction Step of the EKF
     // This is called at 400 hz
-    void predict(float dt, float dVel, float dVelNoise);
+    void predict(Seconds dt, MetresPerSecond dVel, MetresPerSecond dVelNoise);
 
     // fuse the new sensor measurement into the EKF calculations
     // This is called whenever we have a new measurement available
-    void fusePos(float pos, float posVar);
+    void fusePos(Metres pos, SquareMetres posVar);
 
     // Get the EKF state position
-    float getPos() const;
+    Metres getPos() const;
 
     // Get the EKF state velocity
-    float getVel() const;
+    MetresPerSecond getVel() const;
 
     // get the normalized innovation squared
-    float getPosNIS(float pos, float posVar);
+    Unitless getPosNIS(Metres pos, SquareMetres posVar);
 
 private:
     // the typed Kalman filter, defined in PosVelEKF.cpp to keep its expensive
