@@ -94,17 +94,22 @@ class Board:
         # scan-build compiles with gcc but analyses with clang, which rejects
         # -flifetime-dse and then silently skips the analysis
         analyser = any(os.path.basename(c) == 'c++-analyzer' for c in cfg.env.CXX)
-        if 'clang++' in cfg.env.COMPILER_CXX or cfg.env.TOOLCHAIN == 'emscripten' or analyser:
+        if analyser:
+            # its objects are never run, and -fno-builtin would stop gcc
+            # evaluating the maths functions mp-units uses in constant
+            # expressions
+            zero_init_flags = []
+        elif 'clang++' in cfg.env.COMPILER_CXX or cfg.env.TOOLCHAIN == 'emscripten':
             # Clang can elide calls to our replacement operator new entirely.
-            zero_init_flag = '-fno-builtin'
+            zero_init_flags = ['-fno-builtin']
         else:
-            zero_init_flag = '-flifetime-dse=1'
-        env.CXXFLAGS += [zero_init_flag]
+            zero_init_flags = ['-flifetime-dse=1']
+        env.CXXFLAGS += zero_init_flags
         # Board configure_env methods may replace LINKFLAGS, so add this here
         # to preserve the same behaviour during LTO. QURT invokes hexagon-link
         # directly, which does not accept compiler flags.
         if env.BOARD_CLASS != 'QURT':
-            env.LINKFLAGS += [zero_init_flag]
+            env.LINKFLAGS += zero_init_flags
 
         self.disable_buggy_compiler_warnings(cfg, env)
 
