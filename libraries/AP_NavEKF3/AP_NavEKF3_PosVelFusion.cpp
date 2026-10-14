@@ -1127,7 +1127,6 @@ void NavEKF3_core::FuseVelPosNED()
         // fuse measurements sequentially
         for (obsIndex=0; obsIndex<=5; obsIndex++) {
             if (fuseData[obsIndex]) {
-                stateIndex = 4 + obsIndex;
                 // calculate the measurement innovation, using states from a different time coordinate if fusing height data
                 // adjust scaling on GPS measurement noise variances if not enough satellites
                 if (obsIndex <= 2) {
