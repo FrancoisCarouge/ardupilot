@@ -922,10 +922,25 @@ toolchains between sessions, continue.
 - mp-units `abs()` does not compile in the freestanding configuration (no `abs` for the representation
   without the hosted `<cmath>`); the absolute value is taken on the numerical value (F14).
 
+### EKF3 3-axis magnetometer fusion (`NavEKF3_core::FuseMagnetometer`)
+
+- The predicted body field, the common terms and the three Jacobians are typed (Gauss per quaternion
+  unit, unitless for the earth field and body bias states, the field in Gauss).
+- The previous code's structure is kept on purpose: the three innovation variances are computed once,
+  from the states and covariance at entry, and each axis' gain uses the covariance already corrected by
+  the previous axes with that earlier variance. The check generated for it compares the variances at
+  entry and every axis against the live covariance.
+- Equivalence in flight, about 21000 axis fusions in `Copter.CopterMission`, `SITLCompassCalibration`,
+  `GSF_reset` and `MotorVibration`: variances within 9e-16, gains within 2e-14 of the largest gain,
+  `K H P` within 2e-16 (double); 4e-7, 1.2e-5, 1.3e-7 (single). Only the all-but-wind gain mask occurred.
+- Costs: stack frame 712 to 1752 bytes on CubeOrange (limit 2600), 328 to 912 on MatekF405 (limit
+  1300); flash -1348 and -784 bytes.
+
 ### Next (as of 2026-10-14)
 
-1. Phase 7, fusion by fusion: magnetometer next (three sequential axes, then declination and yaw,
-   `AP_NavEKF3_MagFusion.cpp`), then velocity and position, optical flow, range beacon, body odometry.
+1. Phase 7, fusion by fusion: airspeed, sideslip, drag and 3-axis magnetometer done; next the
+   declination and yaw fusions (`AP_NavEKF3_MagFusion.cpp`), then velocity and position, optical flow,
+   range beacon, body odometry.
    The side-by-side check is generated from the previous source by a script, and must compare what the
    previous code reads at each step, not only at entry.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
