@@ -974,10 +974,22 @@ toolchains between sessions, continue.
 - Costs: 191 ns against 62 ns per observation on the host (7 times slower with the element
   constructor); stack 992 bytes in the helper on CubeOrange, 512 on MatekF405; flash +2196 and +2188.
 
+### EKF3 body frame velocity fusion (`NavEKF3_core::FuseBodyVel`)
+
+- The 570 lines of generated scalar code for the three axes become typed expressions; the generated
+  Jacobian expressions themselves are kept, on typed states, and check (m/s per quaternion unit,
+  unitless for velocity). As in the previous code, the Jacobians use the states at entry and each axis
+  the covariance corrected by the previous ones; gains 0 to 6 always apply, the others are masked.
+- Equivalence in flight, about 2850 fusions in `Copter.BodyFrameOdom` and `Rover.WheelEncoders`, four
+  gain masks: within 7e-16 (double), 3.6e-7 (single).
+- Costs: stack frame 864 to 1480 bytes on CubeOrange; flash -3040 bytes; not on 1 MB boards.
+
 ### Next (as of 2026-10-14)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
-   and position done; next body frame velocity (`FuseBodyVel`), optical flow, range beacon.
+   and position, body frame velocity done; next optical flow and range beacon. The optical flow source
+   file also holds a one-state Kalman filter of the terrain height (`EstimateTerrainOffset`), a
+   candidate for the Kalman library itself.
    The side-by-side check is generated from the previous source by a script, and must compare what the
    previous code reads at each step, not only at entry.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
