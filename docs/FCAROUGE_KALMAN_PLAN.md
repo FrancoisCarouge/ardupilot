@@ -955,11 +955,29 @@ toolchains between sessions, continue.
   GPS and static yaw (not GSF, not external navigation): within 6e-16 (double), 2.3e-7 (single). Stack
   frame 288 to 1408 bytes on CubeOrange, 128 to 696 on MatekF405; flash +456 and +292 bytes.
 
+### EKF3 velocity and position fusion (`NavEKF3_core::FuseVelPosNED`)
+
+- Six direct observations (velocity N, E, D in m/s, position N, E, D in m), each an observation model
+  selecting one state. The state index is a run time value; the typed fusion is a template on it,
+  dispatched by a `switch` (six instantiations).
+- `AP_LinearAlgebra` gains `row<i>()` and `column<j>()`, typed selections of a row or column (the gap of
+  F26). Two lessons on the way:
+  - Dense typed products with a selector H were folded by the host compiler, so selection did not
+    change the host time; it matters on the target, where nothing guarantees the folding.
+  - Building the selected vectors with TypedLinearAlgebra's element constructor cost 21.9 kB of flash
+    on MatekF405 (about 1.2 kB of unrolled code per 24-element vector type, F39); copying the storage,
+    the element types being the same, costs nothing: +2188 bytes for the whole fusion, against +2932 with
+    the dense products.
+- Equivalence in flight, about 88000 observations in `Copter.CopterMission`, `GPSGlitchLoiter`,
+  `VisionPosition` and `DeadReckoningInWind`: variances identical, gains within 2.2e-16, `K H P` within
+  4.4e-16.
+- Costs: 191 ns against 62 ns per observation on the host (7 times slower with the element
+  constructor); stack 992 bytes in the helper on CubeOrange, 512 on MatekF405; flash +2196 and +2188.
+
 ### Next (as of 2026-10-14)
 
-1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination and yaw done;
-   next velocity and position (`AP_NavEKF3_PosVelFusion.cpp`), then optical flow, range beacon, body
-   odometry.
+1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
+   and position done; next body frame velocity (`FuseBodyVel`), optical flow, range beacon.
    The side-by-side check is generated from the previous source by a script, and must compare what the
    previous code reads at each step, not only at entry.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
