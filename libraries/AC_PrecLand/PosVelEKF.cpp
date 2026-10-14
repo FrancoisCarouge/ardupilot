@@ -81,7 +81,7 @@ PosVelEKF::~PosVelEKF()
 
 // Initialize the covariance and state matrix
 // This is called when the landing target is located for the first time or it was lost, then relocated
-void PosVelEKF::init(float pos, float posVar, float vel, float velVar)
+void PosVelEKF::init(Metres pos, SquareMetres posVar, MetresPerSecond vel, SquareMetresPerSecondSquared velVar)
 {
     // the Kalman library's identity and zero values are dynamically
     // initialized variables: a filter constructed during static
@@ -91,60 +91,60 @@ void PosVelEKF::init(float pos, float posVar, float vel, float velVar)
         _filter = new (_storage) Filter;
     }
     auto &kalman = _filter->kalman;
-    kalman.x(State{pos * metre, vel * metre_per_second});
+    kalman.x(State{pos, vel});
     Covariance p{};
-    p.at<0, 0>(posVar * (metre * metre));
-    p.at<1, 1>(velVar * (metre_per_second * metre_per_second));
+    p.at<0, 0>(posVar);
+    p.at<1, 1>(velVar);
     kalman.p(p);
 }
 
 // This functions runs the Prediction Step of the EKF
 // This is called at 400 hz
-void PosVelEKF::predict(float dt, float dVel, float dVelNoise)
+void PosVelEKF::predict(Seconds dt, MetresPerSecond dVel, MetresPerSecond dVelNoise)
 {
     if (_filter == nullptr) {
         return;
     }
-    _filter->kalman.predict(dt * second, dVelNoise * metre_per_second, Input{dVel * metre_per_second});
+    _filter->kalman.predict(dt, dVelNoise, Input{dVel});
 }
 
 // fuse the new sensor measurement into the EKF calculations
 // This is called whenever we have a new measurement available
-void PosVelEKF::fusePos(float pos, float posVar)
+void PosVelEKF::fusePos(Metres pos, SquareMetres posVar)
 {
     if (_filter == nullptr) {
         return;
     }
     auto &kalman = _filter->kalman;
-    kalman.r(OutputVariance{posVar * (metre * metre)});
-    kalman.update(Output{pos * metre});
+    kalman.r(OutputVariance{posVar});
+    kalman.update(Output{pos});
 }
 
-float PosVelEKF::getPos() const
+PosVelEKF::Metres PosVelEKF::getPos() const
 {
     if (_filter == nullptr) {
-        return 0.0f;
+        return 0.0f * metre;
     }
-    return _filter->kalman.x().at<0>().numerical_value_in(metre);
+    return _filter->kalman.x().at<0>();
 }
 
-float PosVelEKF::getVel() const
+PosVelEKF::MetresPerSecond PosVelEKF::getVel() const
 {
     if (_filter == nullptr) {
-        return 0.0f;
+        return 0.0f * metre_per_second;
     }
-    return _filter->kalman.x().at<1>().numerical_value_in(metre_per_second);
+    return _filter->kalman.x().at<1>();
 }
 
 // Returns normalized innovation squared
-float PosVelEKF::getPosNIS(float pos, float posVar)
+PosVelEKF::Unitless PosVelEKF::getPosNIS(Metres pos, SquareMetres posVar)
 {
     // NIS = innovation_residual.Transpose * Innovation_Covariance.Inverse * innovation_residual
     if (_filter == nullptr) {
-        return 0.0f;
+        return 0.0f * mp_units::one;
     }
     const auto &kalman = _filter->kalman;
-    const Metres innovation_residual = pos * metre - kalman.x().at<0>();
-    const auto innovation_covariance = kalman.p().at<0, 0>() + posVar * (metre * metre);
-    return (innovation_residual * innovation_residual / innovation_covariance).numerical_value_in(mp_units::one);
+    const Metres innovation_residual = pos - kalman.x().at<0>();
+    const SquareMetres innovation_covariance = kalman.p().at<0, 0>() + posVar;
+    return innovation_residual * innovation_residual / innovation_covariance;
 }
