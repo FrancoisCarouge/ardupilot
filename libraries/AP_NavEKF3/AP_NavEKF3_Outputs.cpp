@@ -294,7 +294,7 @@ bool NavEKF3_core::getHAGL(float &HAGL) const
 {
 #if EK3_FEATURE_OPTFLOW_AGL_KF
     if (frontend->option_is_enabled(NavEKF3::Option::AglKfForOptflow) && aglKfValid) {
-        HAGL = aglKfH;
+        HAGL = aglKfHeight();
         return healthy();
     }
 #endif
