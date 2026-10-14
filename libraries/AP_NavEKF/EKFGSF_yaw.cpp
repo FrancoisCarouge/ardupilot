@@ -534,11 +534,9 @@ bool EKFGSF_yaw::correct(const uint8_t mdl_idx, const Vector2F &vel, const ftype
     }
 
     // Calculate elements for innovation covariance inverse matrix assuming symmetry
-    // NOTE: the off diagonal element of the inverse is -S_NE / S_det. The positive sign is kept from the original
-    // implementation so that the test ratio, and with it the innovation compression, is unchanged.
     const auto S_inv_NN = S_EE / S_det;
     const auto S_inv_EE = S_NN / S_det;
-    const auto S_inv_NE = S_NE / S_det;
+    const auto S_inv_NE = -S_NE / S_det;
 
     // The following expression was derived symbolically from test ratio = transpose(innovation) * inverse(innovation variance) * innovation = [1x2] * [2,2] * [2,1] = [1,1]
     const ftype test_ratio = (innov_N * (innov_N * S_inv_NN + innov_E * S_inv_NE) + innov_E * (innov_N * S_inv_NE + innov_E * S_inv_EE)).numerical_value_in(one);
