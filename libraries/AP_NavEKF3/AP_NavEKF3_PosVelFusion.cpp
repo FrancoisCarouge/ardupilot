@@ -2,10 +2,50 @@
 
 #include "AP_NavEKF3.h"
 #include "AP_NavEKF3_core.h"
+#include "AP_NavEKF3_typed.h"
 #include <GCS_MAVLink/GCS.h>
 #include <AP_DAL/AP_DAL.h>
 
 #define P (const_cast<const Matrix24 &>(Pmut))
+
+namespace {
+
+/*
+  the gain and K*H*P of the direct observation of the state at index, with
+  observation noise variance R: the observation model selects that state.
+  Returns the innovation variance.
+ */
+template <size_t index, typename Observation>
+ftype direct_observation(const ftype *covariance_array, const Observation &R_unit, ftype R, uint32_t kalman_mask,
+                         unsigned stateIndexLim, ftype *Kfusion, ftype *KHP_array)
+{
+    using namespace NavEKF3_typed;
+    const CovarianceView covariance{AP_LinearAlgebra::MatrixView<ftype, 24, 24>{covariance_array}};
+    ObservationModel<Observation> H{};
+    H.template at<index>(ftype(1) * mp_units::one);
+    // P*H' and H*P are the column and row of the observed state
+    const decltype(covariance * fcarouge::transposed(H)) PHt{AP_LinearAlgebra::column<index>(covariance)};
+    const auto S = (H * PHt).at() + R * (R_unit * R_unit);
+    const auto K = PHt / S;
+    for (auto i=0; i<24; i++) {
+        ftype res = 0;
+        if (kalman_mask & (1<<i)) {
+            res = K.data()(i);
+        }
+        Kfusion[i] = res;
+    }
+    // K*H*P is written to its array, its type checked against the covariance without being evaluated
+    const decltype(H * covariance) HP{AP_LinearAlgebra::row<index>(covariance)};
+    static_assert(std::is_convertible_v<decltype(K * HP), Covariance>);
+    for (unsigned i = 0; i<=stateIndexLim; i++) {
+        for (unsigned j = 0; j<=stateIndexLim; j++) {
+            KHP_array[i * 24 + j] = Kfusion[i] * HP.data()(j);
+        }
+    }
+    return S.numerical_value_in(R_unit.unit * R_unit.unit);
+}
+
+} // namespace
 
 /********************************************************
 *                   RESET FUNCTIONS                     *
@@ -757,7 +797,6 @@ void NavEKF3_core::FuseVelPosNED()
     // declare variables used by state and covariance update calculations
     Vector6 R_OBS; // Measurement variances used for fusion
     Vector6 R_OBS_DATA_CHECKS; // Measurement variances used for data checks only
-    ftype SK;
 
     // perform sequential fusion of measurements. This assumes that the
     // errors in the different velocity and position components are
@@ -1120,10 +1159,6 @@ void NavEKF3_core::FuseVelPosNED()
                     }
                 }
 
-                // calculate the Kalman gain and calculate innovation variances
-                varInnovVelPos[obsIndex] = P[stateIndex][stateIndex] + R_OBS[obsIndex];
-                SK = 1.0f/varInnovVelPos[obsIndex];
-
                 uint32_t kalman_mask = (1<<10)-1; // values to calculate in Kfusion (others are set to zero)
 
                 // inhibit delta angle bias state estimation by setting Kalman gains to zero
@@ -1170,27 +1205,33 @@ void NavEKF3_core::FuseVelPosNED()
                     kalman_mask |= (1<<22) | (1<<23);
                 }
 
-                for (auto i=0; i<24; i++) {
-                    ftype res = 0;
-                    if (kalman_mask & (1<<i)) {
-                        res = P[i][stateIndex]*SK;
-                    }
-                    Kfusion[i] = res;
-                }
-
-                // one element of H is 1, compiler will optimize it away
-                Vector24 Hfusion;
-                Hfusion[stateIndex] = 1;
-
-                // correct the covariance P = (I - K*H)*P = P - K*H*P. take advantage of
-                // the zero elements of H to reduce the number of operations.
-                for (unsigned i = 0; i<=stateIndexLim; i++) {
-                    // j as the inner loop allows the compiler to hoist the KH product
-                    // to save computation, and do the inner indexing more efficiently.
-                    for (unsigned j = 0; j<=stateIndexLim; j++) {
-                        ftype res = 0;
-                        res += (Kfusion[i] * Hfusion[stateIndex]) * P[stateIndex][j];
-                        KHP[i][j] = res;
+                // calculate the innovation variance, the Kalman gain and the covariance correction
+                // K*H*P = P - K*H*P of the observation of the velocity or position state
+                {
+                    using namespace NavEKF3_typed;
+                    constexpr Velocity velocity_unit = ftype(1) * metre_per_second;
+                    constexpr Position position_unit = ftype(1) * mp_units::si::metre;
+                    const ftype *const covariance = &P[0][0];
+                    ftype *const khp = &KHP[0][0];
+                    switch (obsIndex) {
+                    case 0:
+                        varInnovVelPos[0] = direct_observation<4>(covariance, velocity_unit, R_OBS[0], kalman_mask, stateIndexLim, &Kfusion[0], khp);
+                        break;
+                    case 1:
+                        varInnovVelPos[1] = direct_observation<5>(covariance, velocity_unit, R_OBS[1], kalman_mask, stateIndexLim, &Kfusion[0], khp);
+                        break;
+                    case 2:
+                        varInnovVelPos[2] = direct_observation<6>(covariance, velocity_unit, R_OBS[2], kalman_mask, stateIndexLim, &Kfusion[0], khp);
+                        break;
+                    case 3:
+                        varInnovVelPos[3] = direct_observation<7>(covariance, position_unit, R_OBS[3], kalman_mask, stateIndexLim, &Kfusion[0], khp);
+                        break;
+                    case 4:
+                        varInnovVelPos[4] = direct_observation<8>(covariance, position_unit, R_OBS[4], kalman_mask, stateIndexLim, &Kfusion[0], khp);
+                        break;
+                    default:
+                        varInnovVelPos[5] = direct_observation<9>(covariance, position_unit, R_OBS[5], kalman_mask, stateIndexLim, &Kfusion[0], khp);
+                        break;
                     }
                 }
 
