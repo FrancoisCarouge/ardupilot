@@ -77,6 +77,8 @@ Kalman filters:
 | `AP_Airspeed/Airspeed_Calibration` | EKF 3x1x0 | m/s, m/s, 1/sqrt(ratio) | 5 |
 | `AP_NavEKF/EKFGSF_yaw` (bank of 5 + Gaussian sum) | EKF 3x2x0 | m/s, m/s, rad | 5 |
 | `AP_Mount/SoloGimbalEKF` (disabled by default) | EKF, 9 states | rad, m/s, rad/s | 5 |
+| `AP_NavEKF3` AGL filter (`UpdateAglKf`, option, new upstream in 2026-10) | KF 2x1x1 | m, m/s; u m/s^2 | 5, done 2026-10-14 |
+| `AP_NavEKF3` terrain offset (`EstimateTerrainOffset`) | EKF 1x1x0, two sequential observations | m | 5 |
 | `AP_NavEKF3` | 24-state EKF, sequential scalar fusion | mixed | 7 |
 | `AP_NavEKF2` | 24-state EKF | mixed | 8 |
 
@@ -984,12 +986,32 @@ toolchains between sessions, continue.
   gain masks: within 7e-16 (double), 3.6e-7 (single).
 - Costs: stack frame 864 to 1480 bytes on CubeOrange; flash -3040 bytes; not on 1 MB boards.
 
+### EKF3 AGL height filter on the Kalman library (`NavEKF3_core::UpdateAglKf`)
+
+- Found during the Phase 7 work: upstream added an optional two-state filter of the height above ground
+  and its rate (`EK3_OPTIONS` bit 3), hand written on scalar members, and the one-state terrain offset
+  estimator sits beside it in the same file; both were missing from the inventory, now added.
+- The AGL filter is a direct fit for the Kalman library, as the precision landing filter was: typed
+  `[height m, velocity m/s]`, input the vertical acceleration, F and G from the time step, process noise
+  from prediction arguments, rangefinder update with H = [1 0] and the library's Joseph form, which is
+  what the expanded expressions computed. The decay, floor, caps, reset and outlier gate stay outside
+  the filter. Fixed storage in the core, constructed when the variables are initialised.
+- First flight: SITL crashed as soon as disarmed logging started, reading the filter of a core before
+  its variables were initialised; the zero-allocated members used to read as zero, so the accessors now
+  return zero until the filter exists.
+- No autotest sets the option: checked with it added to the copter defaults for the run. The check ran
+  the previous filter as a shadow on the same inputs, per core (a single shadow mixing the cores first
+  reported large, false, differences). About 34000 steps and 6500 updates: height 6e-16, velocity
+  4e-13, covariance 4e-15 (double); 3e-7, 1.2e-3 of near zero velocities, 3e-6 (single). Reset and
+  outlier paths not exercised.
+- Costs on CubeOrange: stack frame 72 to 1896 bytes (limit 2600), flash +6364 bytes, 320 bytes per core
+  instead of 48 (F35). Not on 1 MB boards.
+
 ### Next (as of 2026-10-14)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
-   and position, body frame velocity done; next optical flow and range beacon. The optical flow source
-   file also holds a one-state Kalman filter of the terrain height (`EstimateTerrainOffset`), a
-   candidate for the Kalman library itself.
+   and position, body frame velocity done; next optical flow and range beacon. Then the one-state
+   terrain offset filter (`EstimateTerrainOffset`) on the Kalman library, as the AGL filter now is.
    The side-by-side check is generated from the previous source by a script, and must compare what the
    previous code reads at each step, not only at entry.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
