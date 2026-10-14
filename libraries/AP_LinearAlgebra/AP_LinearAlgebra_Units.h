@@ -43,6 +43,8 @@ using Seconds = Quantity<mp_units::si::second>;
 // the unit of ArduPilot's magnetic field measurements
 inline constexpr struct milligauss final : mp_units::named_unit<"mG", mp_units::mag_power<10, -7> * mp_units::si::tesla> {} milligauss;
 using Milligauss = Quantity<milligauss>;
+// the unit of the magnetic field states of the EKFs
+inline constexpr struct gauss final : mp_units::named_unit<"G", mp_units::mag_power<10, -4> * mp_units::si::tesla> {} gauss;
 
 } // namespace Units
 } // namespace AP_LinearAlgebra
