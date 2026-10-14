@@ -25,26 +25,4 @@
 #include "AP_LinearAlgebra_MathsMacrosPop.h"
 
 #include "AP_LinearAlgebra.h"
-
-namespace AP_LinearAlgebra {
-namespace Units {
-
-template <auto Reference, typename T = float>
-using Quantity = mp_units::quantity<Reference, T>;
-
-using Unitless = Quantity<mp_units::one>;
-using Metres = Quantity<mp_units::si::metre>;
-using MetresPerSecond = Quantity<mp_units::si::metre / mp_units::si::second>;
-using MetresPerSecondSquared = Quantity<mp_units::si::metre / mp_units::si::second / mp_units::si::second>;
-using Radians = Quantity<mp_units::si::radian>;
-using RadiansPerSecond = Quantity<mp_units::si::radian / mp_units::si::second>;
-using Seconds = Quantity<mp_units::si::second>;
-
-// the unit of ArduPilot's magnetic field measurements
-inline constexpr struct milligauss final : mp_units::named_unit<"mG", mp_units::mag_power<10, -7> * mp_units::si::tesla> {} milligauss;
-using Milligauss = Quantity<milligauss>;
-// the unit of the magnetic field states of the EKFs
-inline constexpr struct gauss final : mp_units::named_unit<"G", mp_units::mag_power<10, -4> * mp_units::si::tesla> {} gauss;
-
-} // namespace Units
-} // namespace AP_LinearAlgebra
+#include "AP_LinearAlgebra_Quantity.h"
