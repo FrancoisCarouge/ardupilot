@@ -2,6 +2,7 @@
 
 #include "AP_NavEKF3.h"
 #include "AP_NavEKF3_core.h"
+#include "AP_NavEKF3_typed.h"
 #include <AP_DAL/AP_DAL.h>
 
 #define P (const_cast<const Matrix24 &>(Pmut))
@@ -21,20 +22,19 @@
 */
 void NavEKF3_core::FuseAirspeed()
 {
-    // declarations
-    ftype SH_TAS[3];
-    ftype SK_TAS[2];
-    Vector24 H_TAS = {};
+    using namespace NavEKF3_typed;
+    constexpr auto velocity_variance = metre_per_second * metre_per_second;
 
     // copy required states to local variable names
-    const ftype vn = stateStruct.velocity.x;
-    const ftype ve = stateStruct.velocity.y;
-    const ftype vd = stateStruct.velocity.z;
-    const ftype vwn = stateStruct.wind_vel.x;
-    const ftype vwe = stateStruct.wind_vel.y;
+    const StateView states{AP_LinearAlgebra::MatrixView<ftype, 24, 1>{&statesArray[0]}};
+    const Velocity vn = states.at<4>();
+    const Velocity ve = states.at<5>();
+    const Velocity vd = states.at<6>();
+    const Velocity vwn = states.at<22>();
+    const Velocity vwe = states.at<23>();
 
     // calculate the predicted airspeed
-    const ftype VtasPred = norm((ve - vwe) , (vn - vwn) , vd);
+    const ftype VtasPred = norm((ve - vwe).numerical_value_in(metre_per_second), (vn - vwn).numerical_value_in(metre_per_second), vd.numerical_value_in(metre_per_second));
     // perform fusion of True Airspeed measurement
     if (VtasPred > 1.0f)
     {
@@ -42,18 +42,19 @@ void NavEKF3_core::FuseAirspeed()
         innovVtas = VtasPred - tasDataDelayed.tas;
 
         // calculate observation jacobians
-        SH_TAS[0] = 1.0f/VtasPred;
-        SH_TAS[1] = (SH_TAS[0]*(2.0f*ve - 2.0f*vwe))*0.5f;
-        SH_TAS[2] = (SH_TAS[0]*(2.0f*vn - 2.0f*vwn))*0.5f;
-        H_TAS[4] = SH_TAS[2];
-        H_TAS[5] = SH_TAS[1];
-        H_TAS[6] = vd*SH_TAS[0];
-        H_TAS[22] = -SH_TAS[2];
-        H_TAS[23] = -SH_TAS[1];
-        // calculate Kalman gains
-        ftype temp = (tasDataDelayed.tasVariance + SH_TAS[2]*(P[4][4]*SH_TAS[2] + P[5][4]*SH_TAS[1] - P[22][4]*SH_TAS[2] - P[23][4]*SH_TAS[1] + P[6][4]*vd*SH_TAS[0]) + SH_TAS[1]*(P[4][5]*SH_TAS[2] + P[5][5]*SH_TAS[1] - P[22][5]*SH_TAS[2] - P[23][5]*SH_TAS[1] + P[6][5]*vd*SH_TAS[0]) - SH_TAS[2]*(P[4][22]*SH_TAS[2] + P[5][22]*SH_TAS[1] - P[22][22]*SH_TAS[2] - P[23][22]*SH_TAS[1] + P[6][22]*vd*SH_TAS[0]) - SH_TAS[1]*(P[4][23]*SH_TAS[2] + P[5][23]*SH_TAS[1] - P[22][23]*SH_TAS[2] - P[23][23]*SH_TAS[1] + P[6][23]*vd*SH_TAS[0]) + vd*SH_TAS[0]*(P[4][6]*SH_TAS[2] + P[5][6]*SH_TAS[1] - P[22][6]*SH_TAS[2] - P[23][6]*SH_TAS[1] + P[6][6]*vd*SH_TAS[0]));
+        ObservationModel<Velocity> H_TAS{};
+        H_TAS.at<4>((vn - vwn) / (VtasPred * metre_per_second));
+        H_TAS.at<5>((ve - vwe) / (VtasPred * metre_per_second));
+        H_TAS.at<6>(vd / (VtasPred * metre_per_second));
+        H_TAS.at<22>(-(vn - vwn) / (VtasPred * metre_per_second));
+        H_TAS.at<23>(-(ve - vwe) / (VtasPred * metre_per_second));
+
+        // calculate the innovation variance and Kalman gains
+        const CovarianceView covariance{AP_LinearAlgebra::MatrixView<ftype, 24, 24>{&P[0][0]}};
+        const auto PHt = covariance * fcarouge::transposed(H_TAS);
+        const auto S = (H_TAS * PHt).at() + tasDataDelayed.tasVariance * velocity_variance;
+        const ftype temp = S.numerical_value_in(velocity_variance);
         if (temp >= tasDataDelayed.tasVariance) {
-            SK_TAS[0] = 1.0f / temp;
             faultStatus.bad_airspeed = false;
         } else {
             // the calculation is badly conditioned, so we cannot perform fusion on this step
@@ -62,7 +63,7 @@ void NavEKF3_core::FuseAirspeed()
             faultStatus.bad_airspeed = true;
             return;
         }
-        SK_TAS[1] = SH_TAS[1];
+        const auto K = PHt / S;
 
         uint32_t kalman_mask = 0; // values to calculate in Kfusion (others are set to zero)
 
@@ -95,13 +96,13 @@ void NavEKF3_core::FuseAirspeed()
         for (auto i=0; i<24; i++) {
             ftype res = 0;
             if (kalman_mask & (1<<i)) {
-                res = SK_TAS[0]*(P[i][4]*SH_TAS[2] - P[i][22]*SH_TAS[2] + P[i][5]*SK_TAS[1] - P[i][23]*SK_TAS[1] + P[i][6]*vd*SH_TAS[0]);
+                res = K.data()(i);
             }
             Kfusion[i] = res;
         }
 
         // calculate measurement innovation variance
-        varInnovVtas = 1.0f/SK_TAS[0];
+        varInnovVtas = temp;
 
         // calculate the innovation consistency test ratio
         tasTestRatio = sq(innovVtas) / (sq(MAX(0.01f * (ftype)frontend->_tasInnovGate, 1.0f)) * varInnovVtas);
@@ -120,19 +121,13 @@ void NavEKF3_core::FuseAirspeed()
             // restart the counter
             lastTasPassTime_ms = imuSampleTime_ms;
 
-            // correct the covariance P = (I - K*H)*P = P - K*H*P. take advantage of
-            // the zero elements of H to reduce the number of operations.
+            // correct the covariance P = (I - K*H)*P = P - K*H*P. K*H*P is written to its
+            // array, its type checked against the covariance without being evaluated.
+            const auto HP = H_TAS * covariance;
+            static_assert(std::is_convertible_v<decltype(K * HP), Covariance>);
             for (unsigned i = 0; i<=stateIndexLim; i++) {
-                // j as the inner loop allows the compiler to hoist the KH product
-                // to save computation, and do the inner indexing more efficiently.
                 for (unsigned j = 0; j<=stateIndexLim; j++) {
-                    ftype res = 0;
-                    res += (Kfusion[i] * H_TAS[4]) * P[4][j];
-                    res += (Kfusion[i] * H_TAS[5]) * P[5][j];
-                    res += (Kfusion[i] * H_TAS[6]) * P[6][j];
-                    res += (Kfusion[i] * H_TAS[22]) * P[22][j];
-                    res += (Kfusion[i] * H_TAS[23]) * P[23][j];
-                    KHP[i][j] = res;
+                    KHP[i][j] = Kfusion[i] * HP.data()(j);
                 }
             }
 
