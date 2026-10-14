@@ -234,6 +234,60 @@ private:
 };
 
 /*
+  a read only matrix over storage owned elsewhere, row major: the backend
+  of a typed view of an existing array, a covariance for example, which
+  is then neither copied nor moved. Its products are owning matrices.
+ */
+template <typename T, size_t R, size_t C>
+struct MatrixView {
+    const T *v;
+
+    constexpr const T &operator()(size_t i, size_t j) const
+    {
+        return v[i * C + j];
+    }
+    constexpr const T &operator()(size_t i) const
+    {
+        return v[i];
+    }
+    constexpr const T &operator[](size_t i, size_t j) const
+    {
+        return v[i * C + j];
+    }
+    constexpr const T &operator[](size_t i) const
+    {
+        return v[i];
+    }
+
+    template <size_t N>
+    friend constexpr Matrix<T, R, N> operator*(const MatrixView &a, const Matrix<T, C, N> &b)
+    {
+        Matrix<T, R, N> m{};
+        for (size_t i = 0; i < R; i++) {
+            for (size_t j = 0; j < N; j++) {
+                for (size_t k = 0; k < C; k++) {
+                    m(i, j) += a(i, k) * b(k, j);
+                }
+            }
+        }
+        return m;
+    }
+    template <size_t N>
+    friend constexpr Matrix<T, N, C> operator*(const Matrix<T, N, R> &a, const MatrixView &b)
+    {
+        Matrix<T, N, C> m{};
+        for (size_t i = 0; i < N; i++) {
+            for (size_t j = 0; j < C; j++) {
+                for (size_t k = 0; k < R; k++) {
+                    m(i, j) += a(i, k) * b(k, j);
+                }
+            }
+        }
+        return m;
+    }
+};
+
+/*
   solve x * b = a for x, b being symmetric positive definite, by the
   Cholesky factorization b = L * transpose(L), without pivoting: x holds a
   on entry, and b is overwritten. Each pivot is compared with the diagonal
@@ -293,6 +347,12 @@ template <typename T, typename RowIndexes, typename ColumnIndexes>
 using TypedMatrix = fcarouge::typed_matrix<
     Matrix<T, std::tuple_size_v<RowIndexes>, std::tuple_size_v<ColumnIndexes>>,
     RowIndexes, ColumnIndexes>;
+
+// the typed view of an array of the elements of the typed matrix M
+template <typename M>
+using TypedView = fcarouge::typed_matrix<
+    MatrixView<std::remove_cvref_t<decltype(std::declval<M>().data()(0, 0))>, M::rows, M::columns>,
+    typename M::row_indexes, typename M::column_indexes>;
 
 // a column vector whose i-th element has the i-th type
 template <typename T, typename... Types>
