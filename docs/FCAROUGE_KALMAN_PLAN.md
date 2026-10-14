@@ -740,7 +740,7 @@ Measured with a probe filter of N states and one output, for Cortex-M7 (Arm GCC 
   prediction). The small filters already ported (4 states and fewer) are within the limits, with the
   EKFGSF exception documented above.
 
-### Next (as of 2026-10-11)
+### Next (as of 2026-10-11, superseded below)
 
 1. Watch PR 3 CI on the new commits; re-run the jobs that only failed on Docker Hub pulls.
 2. Upstream, in the FrancoisCarouge repositories (Phase 2), in order of what blocks ArduPilot most:
@@ -752,6 +752,93 @@ Measured with a probe filter of N states and one output, for Cortex-M7 (Arm GCC 
    stack; see the assessments above. Its side-by-side SITL comparison can be prepared meanwhile.
 4. Generalize `AP_LinearAlgebra::Units` to a scalar type parameter before EKF3 and EKF2.
 5. Decide the EKFGSF test ratio sign with a maintainer.
+
+### Refresh 2026-10-13: rebase, upstream updates, CI
+
+- PR 3 CI on 79502ecf70 (2026-10-11): 119 jobs passed, 3 skipped, 1 failed. The Arch Linux (GCC 16),
+  scan-build, unit test, WebAssembly and ChibiOS jobs pass, so the two fixes of 2026-10-11 are confirmed.
+  The failure, `colcon build/test`, is a schema download from `download.ros.org` ("unreachable network").
+  Flash cost of the whole branch against `master`, from the CI size table: copter +8.4 kB (MambaH743v4)
+  to +12.7 kB (Durandal, MatekH743), plane +13.0 to +16.1 kB, rover +8.3 to +13.2 kB, 1 MB boards
+  (MatekF405, KakuteF7, Pixhawk1-1M) +10.8 to +14.8 kB.
+- `fcarouge` rebased onto the fork's `master` (102 new commits, no conflict), pushed with
+  `--force-with-lease`; the previous head is kept locally as `backup/fcarouge-2026-10-11`.
+- Submodules bumped: Kalman f897f39c8 (declared matrices owned by the declaration, declared output type
+  honored, constrained constructor, `predict()` and `update()`), TypedLinearAlgebra ac4c3567a (`std::array`
+  and Boost.Multi samples); mp-units unchanged. No finding is closed by them; the open ones were
+  rechecked in the sources, and the stack probe gives the same frames (F38).
+- Validation after the rebase and bumps, from a clean build: the seven typed unit tests; autotests
+  `Copter.GSF`, `GSF_reset`, `EKFYawResetLogged`, `PrecisionLanding`, `PrecisionLoiterCompanion`,
+  `FixedYawCalibration`, `SITLCompassCalibration`, `CopterMission`, `WPArcs`, `SplineTerrain`, `NavDelay`,
+  `MountSolo`, `Plane.Soaring`, `IMUTempCal`, `AIRSPEED_AUTOCAL`; CubeOrange and MatekF405 copter and plane
+  with `-Werror`.
+- Inventory sweep (Kalman, covariance, innovation, Jacobian, least squares, matrix inverse, over the
+  libraries and vehicles): nothing new. The optical flow calibration is a weighted average of per-sample
+  scalars, not linear algebra, and is excluded.
+
+### IMU temperature correction (`AP_InertialSensor_TCal::polynomial_eval`)
+
+- The evaluation side of the temperature calibration, left out when `PolyFit` was typed: the
+  coefficients of each axis (sensor/K, sensor/K^2, sensor/K^3, stored scaled by 1e6) form a typed
+  3x3 matrix, a column per power, multiplied by the typed vector of the powers of the temperature
+  difference. The sensor has a dimension of its own, as accelerometers and gyroscopes share the code;
+  the parameter scale is the unit of the result (`mag_power<10, -6>` of the sensor unit), so the
+  conversion to the sensor unit replaces the multiplication by `INV_SCALE_FACTOR`; the cast of the
+  parameter array to `Vector3f *` is gone.
+- mp-units requires temperature differences to be built with `delta<kelvin>()` (a deprecation warning
+  otherwise): the typed code says that the argument is a difference, which the float did not.
+- Equivalence over 200000 random coefficient sets and temperatures: at most 9e-8 from the Horner form,
+  rounding. This runs for every IMU sample: 184 bytes of code, CubeOrange copter +92 bytes, same time
+  within the resolution of the host measurement. `Plane.IMUTempCal` passes from a clean build.
+
+### Cleanup: `MatrixN` removed
+
+- With the thermal EKF on the Kalman library, `MatrixN` had no user: `AP_Math/matrixN.h` and
+  `matrixN.cpp` are removed, with `VectorN::mult()`. `VectorN` stays (index checked arrays of the EKFs).
+  The unused array types of `EKFGSF_yaw.h` are removed too.
+- Also without a flight code user now: `mat_inverse()`, `mat_mul()` and `mat_identity()` of
+  `AP_Math/matrix_alg.cpp`, whose inverse allocates on the heap; the calibrations that called them use the
+  typed solves. Only `AP_Math/examples/matrix_alg` uses them, and they are not linked into the firmware.
+  Left in place: removing a general utility and its example is the owner's call.
+- `AP_LinearAlgebra::Units::Quantity` takes the scalar type as a second argument (float by default), used
+  by the EKFGSF with `ftype`.
+
+### EKF3 with TypedLinearAlgebra alone: a scalar fusion fits when the covariance is updated in place
+
+A probe of one EKF3-like scalar fusion (appendix): 24 typed states of 6 units (quaternion, velocity,
+position, delta angle bias, delta velocity bias, earth and body field, wind), a typed 1x24 output model,
+`PHt = P * transposed(H)`, `S = H * PHt + R`, `K = PHt / S`, `x = x - K * innovation`, and the covariance
+update `P = P - K * transposed(PHt)`.
+
+| | Single precision | Double precision |
+|---|---|---|
+| Stack frame, covariance updated with typed operations | 9528 | 19048 |
+| Stack frame, covariance updated in place on the storage | 608 | 1200 |
+
+- Cortex-M7, Arm GCC 15.2 `-O2`, bytes. In place means a loop over the backend storage, the type of the
+  expression `P - K * transposed(PHt)` being checked against the covariance type without evaluating it,
+  the workaround of F28 used by the calibrations.
+- Compile cost on the host (g++ 15 `-O2`): 3.2 s and 590 MB for the translation unit, 1.6 s and 400 MB
+  of it for the headers: a typed 24x24 covariance of 576 element types is affordable (F22).
+- Consequence: the fusion steps of EKF3 (and the gimbal EKF) can be typed now, without the Kalman
+  library, keeping the generated covariance prediction; the Kalman library joins when F38 is solved.
+  What this needs in ArduPilot: a typed view over the existing `Matrix24 P` storage (a non-owning
+  backend), the inhibited states (`stateIndexLim`, the gain mask), and a way to use the sparsity of H,
+  five non-zero elements of 24 for the airspeed (F26).
+
+### Next (as of 2026-10-13)
+
+1. Phase 7 pilot: one EKF3 fusion, the true airspeed (`FuseAirspeed`), computed with typed state, output
+   model, gain and innovation variance beside the current code in SITL, to compare the numbers and the
+   time before replacing anything.
+2. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
+   with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
+   updates (F7), callable F and Q with a transition function (F23), typed blocks (F26), repository size
+   (F36). Report the mp-units freestanding defect (F14) to mp-units.
+3. `SoloGimbalEKF`: same approach as EKF3 once the pilot settles it (typed fusions, generated or typed
+   `F P F' + Q` prediction in place), or the Kalman library when its update fits the stack.
+4. Decide with a maintainer: the EKFGSF test ratio sign, the gimbal EKF in-place covariance update, and
+   the removal of `matrix_alg`.
 
 ## Appendix: stack probe
 
@@ -834,4 +921,65 @@ unsigned probe_size()
 {
     return sizeof(Filter);
 }
+```
+
+## Appendix: EKF3 scalar fusion probe
+
+Compiled as the stack probe, with `-DPROBE_T=double -DPROBE_STAGE=1` for the in-place covariance update
+and `-DPROBE_STAGE=2` for the typed one (the Kalman include path is not needed).
+
+```cpp
+// a scalar fusion on an EKF3-like typed state: 24 states of 6 different units
+#include <AP_LinearAlgebra/AP_LinearAlgebra.h>
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Units.h>
+
+#ifndef PROBE_T
+#define PROBE_T double
+#endif
+
+namespace {
+using namespace mp_units;
+template <auto R> using Q = quantity<R, PROBE_T>;
+constexpr auto mps = si::metre / si::second;
+using One = Q<one>;
+using Vel = Q<mps>;
+using Pos = Q<si::metre>;
+using Ang = Q<si::radian>;
+using Mag = Q<si::tesla>;
+// quaternion, velocity, position, gyro bias, accel bias, earth field, body field, wind
+using State = AP_LinearAlgebra::ColumnVector<PROBE_T,
+    One, One, One, One, Vel, Vel, Vel, Pos, Pos, Pos, Ang, Ang, Ang, Vel, Vel, Vel,
+    Mag, Mag, Mag, Mag, Mag, Mag, Vel, Vel>;
+using Output = AP_LinearAlgebra::ColumnVector<PROBE_T, Vel>;
+using Covariance = decltype(State{} * fcarouge::transposed(State{}));
+using OutputModel = decltype(Output{} / State{});
+}
+
+extern State x;
+extern Covariance P;
+State x;
+Covariance P;
+
+#if PROBE_STAGE >= 1
+// true airspeed like fusion: H is non zero for the velocities and the wind
+__attribute__((noinline)) void fuse(const OutputModel &H, Vel innovation, Q<mps * mps> R)
+{
+    const auto PHt = P * fcarouge::transposed(H);
+    const auto S = (H * PHt).at() + R;
+    const auto K = PHt / S;
+    x = State{x - K * innovation};
+#if PROBE_STAGE >= 2
+    // P = P - K * transposed(PHt), each typed operation returning a new matrix
+    P = Covariance{P - K * fcarouge::transposed(PHt)};
+#else
+    // the same, in place on the storage, the types checked without evaluation
+    static_assert(std::is_convertible_v<decltype(P - K * fcarouge::transposed(PHt)), Covariance>);
+    for (size_t i = 0; i < 24; i++) {
+        for (size_t j = 0; j < 24; j++) {
+            P.data()(i, j) -= K.data()(i) * PHt.data()(j);
+        }
+    }
+#endif
+}
+#endif
 ```
