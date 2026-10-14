@@ -73,8 +73,13 @@ private:
     Vector3f gyro_tref;
     Learn *learn;
 
-    void correct_sensor(float temperature, float cal_temp, const AP_Vector3f coeff[3], Vector3f &v) const;
-    Vector3f polynomial_eval(float temperature, const AP_Vector3f coeff[3]) const;
+    // the sensor a correction is for, which sets its unit
+    enum class Sensor : uint8_t {
+        Accel,  // m/s/s
+        Gyro,   // rad/s
+    };
+    void correct_sensor(float temperature, float cal_temp, const AP_Vector3f coeff[3], Sensor sensor, Vector3f &v) const;
+    Vector3f polynomial_eval(float temperature, const AP_Vector3f coeff[3], Sensor sensor) const;
 
     // get instance number
     uint8_t instance(void) const;
