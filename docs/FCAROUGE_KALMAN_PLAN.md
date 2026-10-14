@@ -822,22 +822,60 @@ update `P = P - K * transposed(PHt)`.
   of it for the headers: a typed 24x24 covariance of 576 element types is affordable (F22).
 - Consequence: the fusion steps of EKF3 (and the gimbal EKF) can be typed now, without the Kalman
   library, keeping the generated covariance prediction; the Kalman library joins when F38 is solved.
+  Done for the true airspeed, see the pilot below.
   What this needs in ArduPilot: a typed view over the existing `Matrix24 P` storage (a non-owning
   backend), the inhibited states (`stateIndexLim`, the gain mask), and a way to use the sparsity of H,
   five non-zero elements of 24 for the airspeed (F26).
 
+### Phase 7 pilot: EKF3 true airspeed fusion (`NavEKF3_core::FuseAirspeed`)
+
+- Side by side first: a typed computation of the Jacobian, innovation variance, gain and `K H P` ran
+  beside the generated code in SITL and reproduced it (gain within 3e-13, the rest within 4e-16), on a
+  copy of the covariance and then on a view of it.
+- `AP_LinearAlgebra` gains `MatrixView`, a read only backend over storage owned elsewhere, and
+  `TypedView<M>`: TypedLinearAlgebra composes over it unchanged, so the filter's `statesArray` and `P`
+  arrays are used typed without a copy. `AP_NavEKF3_typed.h` declares the 24 typed states (quaternion
+  unitless, velocity m/s, position m, delta angle bias rad, delta velocity bias m/s, earth and body field
+  Gauss, wind m/s), the covariance, their views, and `ObservationModel<Observation>`; it is included by
+  the fusion source file only, before that file's `P` macro.
+- `FuseAirspeed()` now builds a typed 1x24 Jacobian, `PHt = P * transposed(H)`, `S = H * PHt + R`,
+  `K = PHt / S`; the gain mask (a run time selection, applied when copying the gain from the backend
+  storage), the consistency test and `FinishFusion()` are as before; `K H P` goes to the `KHP` array by a
+  loop, the type of `K * (H * P)` being checked against the covariance type unevaluated (F28). The
+  generated covariance prediction is untouched.
+- What typing said: a first unit test of the view multiplied the covariance by a state vector, which
+  TypedLinearAlgebra rejected, rightly: `P x` adds m^3 to m^3/s^2 (F10). The Jacobian elements for the
+  velocities and the wind are unitless, as the types require.
+- Equivalence in flight, the previous code computing beside the typed one on the same inputs: 38450
+  fusions over `Plane.AIRSPEED_AUTOCAL`, `Soaring`, `Deadreckoning`, `DeadreckoningNoAirSpeed` and
+  `EKFlaneswitch`, with the wind only, all states and all but wind gain masks: gains within 9e-12
+  relative, innovation variance and `K H P` within 6e-16 (double precision; single precision not run).
+- Costs: time per fusion on the host equal within noise (603 ns typed against 643 ns generated in one
+  run, 1235 against 934 in another; an optimized build, `autotest.py --no-debug`: the default autotest
+  build is `-O0` and made the typed code look 8 times slower). The dense products do 24 terms where the
+  generated code did 5 (F26). Stack frame of `FuseAirspeed()`: 96 to 1248 bytes on CubeOrange (double,
+  EKF limit 2600), 32 to 656 on MatekF405 (limit 1300). Flash: +200 and +260 bytes for plane.
+- Validation: those five autotests and `Plane.AirspeedDrivers`, `Copter.GSF` from a clean build; g++ 15,
+  clang 20, Arm GCC 15.2 with `-Werror`. Not done: Replay, single precision equivalence, timing on a
+  flight controller, WebAssembly (CI). Human review requested: sensor fusion code.
+- Environment notes: `m.at<i, j>()` cannot be an argument of a function-like macro (gtest, `fmaxF`), the
+  comma splits it; TypedLinearAlgebra's call form with index literals, `m(0_i, 1_i)`, can, and is the
+  one to use there. clang `-Wshadow` rejects a variable named `H` where mp-units' unit symbols are
+  visible (the henry).
+
 ### Next (as of 2026-10-13)
 
-1. Phase 7 pilot: one EKF3 fusion, the true airspeed (`FuseAirspeed`), computed with typed state, output
-   model, gain and innovation variance beside the current code in SITL, to compare the numbers and the
-   time before replacing anything.
-2. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
+1. Phase 7, continue fusion by fusion with the method of the pilot (typed beside generated in flight,
+   then replace): sideslip next (same source file, two-term Jacobian over velocity, quaternion and wind),
+   then magnetometer, velocity and position, optical flow, range beacon, body odometry, drag. Before
+   that, run the pilot in single precision and through Replay.
+2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
+3. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
    with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
-   updates (F7), callable F and Q with a transition function (F23), typed blocks (F26), repository size
-   (F36). Report the mp-units freestanding defect (F14) to mp-units.
-3. `SoloGimbalEKF`: same approach as EKF3 once the pilot settles it (typed fusions, generated or typed
-   `F P F' + Q` prediction in place), or the Kalman library when its update fits the stack.
-4. Decide with a maintainer: the EKFGSF test ratio sign, the gimbal EKF in-place covariance update, and
+   updates (F7), callable F and Q with a transition function (F23), typed blocks or sparse rows (F26),
+   repository size (F36). Report the mp-units freestanding defect (F14) to mp-units.
+4. `SoloGimbalEKF` and EKF2: the same typed fusions over views, their predictions kept as they are.
+5. Decide with a maintainer: the EKFGSF test ratio sign, the gimbal EKF in-place covariance update, and
    the removal of `matrix_alg`.
 
 ## Appendix: stack probe
