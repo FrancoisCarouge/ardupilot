@@ -28,9 +28,11 @@
 #include <AP_Notify/AP_Notify.h>
 #include "AP_InertialSensor.h"
 
+#include <AP_LinearAlgebra/AP_LinearAlgebra.h>
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Units.h>
+
 // this scale factor ensures params are easy to work with in GUI parameter editors
 #define SCALE_FACTOR 1.0e6
-#define INV_SCALE_FACTOR 1.0e-6
 #define TEMP_RANGE_MIN 10
 
 // timeout calibration after 10 minutes, if no temperature rise
@@ -44,6 +46,33 @@
 #define TEMP_REFERENCE 35.0
 
 extern const AP_HAL::HAL& hal;
+
+namespace {
+
+/*
+  the correction is the same for accelerometers and gyroscopes: the
+  sensor has a dimension of its own here, so that the units of the
+  coefficients, sensor/K, sensor/K^2 and sensor/K^3, are checked against
+  the powers of the temperature difference at compile time
+ */
+inline constexpr struct dim_sensor final : mp_units::base_dimension<"S"> {} dim_sensor;
+QUANTITY_SPEC(sensor, dim_sensor);
+inline constexpr struct sensor_unit final : mp_units::named_unit<"sensor", mp_units::kind_of<sensor>> {} sensor_unit;
+// the parameters hold the coefficients scaled by SCALE_FACTOR, 1e6
+constexpr auto scaled_sensor_unit = mp_units::mag_power<10, -6> * sensor_unit;
+constexpr auto kelvin = mp_units::si::kelvin;
+
+template <auto Reference>
+using Quantity = mp_units::quantity<Reference, float>;
+
+// the powers of the temperature difference
+using Powers = AP_LinearAlgebra::ColumnVector<float, Quantity<kelvin>, Quantity<pow<2>(kelvin)>, Quantity<pow<3>(kelvin)>>;
+// the correction of each axis
+using Correction = AP_LinearAlgebra::ColumnVector<float, Quantity<scaled_sensor_unit>, Quantity<scaled_sensor_unit>, Quantity<scaled_sensor_unit>>;
+// the coefficients of each axis, a row, for each power, a column
+using Coefficients = decltype(Correction{} / Powers{});
+
+} // namespace
 
 // temperature calibration parameters, per IMU
 const AP_Param::GroupInfo AP_InertialSensor_TCal::var_info[] = {
@@ -204,8 +233,18 @@ const AP_Param::GroupInfo AP_InertialSensor_TCal::var_info[] = {
 Vector3f AP_InertialSensor_TCal::polynomial_eval(float tdiff, const AP_Vector3f coeff[3]) const
 {
     // evaluate order 3 polynomial
-    const Vector3f *c = (Vector3f *)&coeff[0];
-    return (c[0] + (c[1] + c[2]*tdiff)*tdiff)*tdiff*INV_SCALE_FACTOR;
+    Coefficients c{};
+    for (uint8_t power = 0; power < 3; power++) {
+        const Vector3f &axes = coeff[power].get();
+        for (uint8_t axis = 0; axis < 3; axis++) {
+            c.data()(axis, power) = axes[axis];
+        }
+    }
+    const Powers t{mp_units::delta<kelvin>(tdiff), sq(tdiff) * pow<2>(kelvin), sq(tdiff) * tdiff * pow<3>(kelvin)};
+    const Correction correction{c * t};
+    return Vector3f(correction.at<0>().numerical_value_in(sensor_unit),
+                    correction.at<1>().numerical_value_in(sensor_unit),
+                    correction.at<2>().numerical_value_in(sensor_unit));
 }
 
 /*
