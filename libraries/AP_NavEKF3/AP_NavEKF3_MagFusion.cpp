@@ -1037,19 +1037,21 @@ bool NavEKF3_core::fuseEulerYaw(yawFusionMethod method)
 #endif
     }
 
-    // Calculate innovation variance and Kalman gains, taking advantage of the fact that only the first 4 elements in H are non zero
-    ftype PH[4];
-    ftype varInnov = R_YAW;
-    for (uint8_t rowIndex=0; rowIndex<=3; rowIndex++) {
-        PH[rowIndex] = 0.0f;
-        for (uint8_t colIndex=0; colIndex<=3; colIndex++) {
-            PH[rowIndex] += P[rowIndex][colIndex]*H_YAW[colIndex];
-        }
-        varInnov += H_YAW[rowIndex]*PH[rowIndex];
-    }
-    ftype varInnovInv;
-    if (varInnov >= R_YAW) {
-        varInnovInv = 1.0f / varInnov;
+    // the yaw observation model, in radians per quaternion unit
+    using namespace NavEKF3_typed;
+    constexpr auto radian = mp_units::si::radian;
+    using Angle = Quantity<radian>;
+    ObservationModel<Angle> H{};
+    H.at<0>(H_YAW[0] * radian);
+    H.at<1>(H_YAW[1] * radian);
+    H.at<2>(H_YAW[2] * radian);
+    H.at<3>(H_YAW[3] * radian);
+
+    // Calculate innovation variance and Kalman gains
+    const CovarianceView covariance{AP_LinearAlgebra::MatrixView<ftype, 24, 24>{&P[0][0]}};
+    const auto PHt = covariance * fcarouge::transposed(H);
+    const Quantity<radian * radian> varInnov = (H * PHt).at() + R_YAW * (radian * radian);
+    if (varInnov >= R_YAW * (radian * radian)) {
         // output numerical health status
         faultStatus.bad_yaw = false;
     } else {
@@ -1062,16 +1064,13 @@ bool NavEKF3_core::fuseEulerYaw(yawFusionMethod method)
     }
 
     // calculate Kalman gain
+    const auto K = PHt / varInnov;
     for (uint8_t rowIndex=0; rowIndex<=stateIndexLim; rowIndex++) {
-        Kfusion[rowIndex] = 0.0f;
-        for (uint8_t colIndex=0; colIndex<=3; colIndex++) {
-            Kfusion[rowIndex] += P[rowIndex][colIndex]*H_YAW[colIndex];
-        }
-        Kfusion[rowIndex] *= varInnovInv;
+        Kfusion[rowIndex] = K.data()(rowIndex);
     }
 
     // calculate the innovation test ratio
-    yawTestRatio = sq(innovYaw) / (sq(MAX(0.01f * (ftype)frontend->_yawInnovGate, 1.0f)) * varInnov);
+    yawTestRatio = sq(innovYaw) / (sq(MAX(0.01f * (ftype)frontend->_yawInnovGate, 1.0f)) * varInnov.numerical_value_in(radian * radian));
 
     // Declare the magnetometer unhealthy if the innovation test fails
     if (yawTestRatio > 1.0f) {
@@ -1085,18 +1084,13 @@ bool NavEKF3_core::fuseEulerYaw(yawFusionMethod method)
         magHealth = true;
     }
 
-    // correct the covariance P = (I - K*H)*P = P - K*H*P. take advantage of
-    // the zero elements of H to reduce the number of operations.
+    // correct the covariance P = (I - K*H)*P = P - K*H*P. K*H*P is written to its
+    // array, its type checked against the covariance without being evaluated.
+    const auto HP = H * covariance;
+    static_assert(std::is_convertible_v<decltype(K * HP), Covariance>);
     for (unsigned i = 0; i<=stateIndexLim; i++) {
-        // j as the inner loop allows the compiler to hoist the KH product
-        // to save computation, and do the inner indexing more efficiently.
         for (unsigned j = 0; j<=stateIndexLim; j++) {
-            ftype res = 0;
-            res += (Kfusion[i] * H_YAW[0]) * P[0][j];
-            res += (Kfusion[i] * H_YAW[1]) * P[1][j];
-            res += (Kfusion[i] * H_YAW[2]) * P[2][j];
-            res += (Kfusion[i] * H_YAW[3]) * P[3][j];
-            KHP[i][j] = res;
+            KHP[i][j] = Kfusion[i] * HP.data()(j);
         }
     }
 
