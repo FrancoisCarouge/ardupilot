@@ -1192,7 +1192,9 @@ source files, at the first line of each function.
 4. Samples for the Kalman library (F40), with the owner: the terrain offset estimator first, written from
    its model, not ArduPilot's GPL source.
 5. `SoloGimbalEKF` and EKF2: the same typed fusions over views.
-6. Decide with a maintainer: the gimbal EKF in-place covariance update.
+6. Gimbal EKF in-place covariance update: owner chose to fix it (2026-10-15), `ca5e6f1ca2`; effect in
+   flight at most 8e-6 of the largest element (`Copter.MountSolo`). PR candidate 6; the typed port is
+   compared against the fixed code.
 7. Objective 4: done for the precision landing filter and the airspeed calibration (typed interfaces,
    held by pointer so that the unit headers reach few sources); boundaries audited; EKFGSF assessed
    and left untyped; the AGL filter's interface is internal to the EKF3 core.
