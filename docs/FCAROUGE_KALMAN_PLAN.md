@@ -84,7 +84,7 @@ Kalman filters:
 | `AP_NavEKF/EKFGSF_yaw` (bank of 5 + Gaussian sum) | EKF 3x2x0 | m/s, m/s, rad | 5 |
 | `AP_Mount/SoloGimbalEKF` (disabled by default) | EKF, 9 states | rad, m/s, rad/s | 5 |
 | `AP_NavEKF3` AGL filter (`UpdateAglKf`, option, new upstream in 2026-10) | KF 2x1x1 | m, m/s; u m/s^2 | 5, done 2026-10-14 |
-| `AP_NavEKF3` terrain offset (`EstimateTerrainOffset`) | EKF 1x1x0, range (m) and flow (rad/s) observations, gated | m | 7, beside the library (F40) |
+| `AP_NavEKF3` terrain offset (`EstimateTerrainOffset`) | EKF 1x1x0, range (m) and flow (rad/s) observations, gated | m | 7, done 2026-10-15 with quantities, beside the library (F40) |
 | `AP_NavEKF3` beacon alignment (`FuseRngBcnStatic`, found 2026-10-15) | EKF 3x1x0, range observations | m, m, m | 5, candidate for the library |
 | `AP_NavEKF3` beacon vertical offset (`CalcRangeBeaconPosDownOffset`, found 2026-10-15) | two KF 1x1x0, one per height hypothesis | m | 5 |
 | `AP_NavEKF3` | 24-state EKF, sequential scalar fusion | mixed | 7 |
@@ -1098,12 +1098,28 @@ source files, at the first line of each function.
 - Environment: interrupted sessions wipe the scratchpad and kill background jobs; scripts and logs now
   live in the workspace's `ardupilot/work/`, and autotests run detached.
 
+### EKF3 terrain offset estimator (`NavEKF3_core::EstimateTerrainOffset`)
+
+- One state, so mp-units quantities rather than typed matrices (objective 4): terrain in m, variance in
+  m^2, the range observation in m, the flow observations in rad/s with their Jacobians in rad/(s m). The
+  process noise growth now checks as m^2 + s^2 (m/s)^2. Not on the Kalman library (F40): two observation
+  types on one state, each gated, the state clamped and the variance floored after each correction.
+- Kept: both flow innovations computed before either correction (after the Y correction the X Jacobian
+  is refreshed, its innovation is not: worth a maintainer's look); the range prediction made before the
+  "below the vehicle" clamp; the float `1E-6f` variance floor, also in double builds.
+- Equivalence, both functions run on the same member values (a wrapper restoring them in between): over
+  the four flow autotests (2500 calls, range branch only) and a temporary GPS flight with
+  `EK3_FLOW_USE` 2 at speed (7000 calls, 2917 through the flow branch), terrain and variance identical,
+  test ratios within 2e-16 (double) and 1.2e-7 (single).
+- Costs on CubeOrange: stack frame 216 to 320 bytes, flash +396 bytes; 69 ns per call against 55 ns.
+  g++ 15 `--Werror` and clang 20 clean.
+
 ### Next (as of 2026-10-15)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
-   and position, body frame velocity, optical flow, range beacon done; next the terrain offset estimator
-   typed beside the library (F40), not on it; then the beacon alignment filter (`FuseRngBcnStatic`) and its
-   vertical offset filters on the library, if they fit.
+   and position, body frame velocity, optical flow, range beacon, terrain offset estimator done; next
+   the beacon alignment filter (`FuseRngBcnStatic`) and its vertical offset filters on the library, if
+   they fit.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
 3. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
    with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
