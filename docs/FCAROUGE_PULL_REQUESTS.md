@@ -12,6 +12,8 @@ Toolchain 15.2, the named tests run. Before opening one: rebase on the current `
 an open pull request on the same subject, follow `.github/PULL_REQUEST_TEMPLATE.md`, and state the
 AI assistance (AGENTS.md).
 
+2026-10-15: the branch rebased on `master` `b032bcbde3` without conflict; none of the five is upstream.
+
 | # | Title | Commits on `fcarouge` | Size | Flight code | Status |
 |---|---|---|---|---|---|
 | 1 | AP_Math: construct the test vector with parentheses | 504c43f6b1 | 1 line, 1 file | no | proposed |
