@@ -56,39 +56,9 @@ public:
 };
 
 
-class Airspeed_Calibration {
-public:
-    Airspeed_Calibration();
-    ~Airspeed_Calibration();
-
-    CLASS_NO_COPY(Airspeed_Calibration);
-
-    // initialise the calibration
-    void init(float initial_ratio);
-
-    // take current airspeed in m/s and ground speed vector and return
-    // new scaling factor
-    float update(float airspeed, const Vector3f &vg, int16_t max_airspeed_allowed_during_cal);
-
-    // set the scale factor estimate, 1/sqrt(ratio)
-    void set_scale(float scale);
-
-    // the state, wind north and east (m/s) and scale factor, and its variances
-    Vector3f get_state() const;
-    Vector3f get_variances() const;
-
-private:
-    // the typed Kalman filter for the airspeed ratio, defined in
-    // Airspeed_Calibration.cpp to keep its expensive headers out of this one,
-    // and constructed in this storage on first use, not with this object: no
-    // heap, and not during static initialization, whose order the filter's
-    // default values depend on
-    struct Filter;
-    static constexpr size_t filter_size = 184;
-    alignas(8) uint8_t _storage[filter_size];
-    Filter *_filter = nullptr;
-    Filter &filter();
-};
+// in flight airspeed ratio calibration, held by pointer: its header brings
+// the unit types, see Airspeed_Calibration.h
+class Airspeed_Calibration;
 
 class AP_Airspeed
 {
@@ -326,8 +296,8 @@ private:
         } cal;
 
 #if AP_AIRSPEED_AUTOCAL_ENABLE
-        // In flight ratio calibration
-        Airspeed_Calibration calibration;
+        // In flight ratio calibration, allocated by init()
+        Airspeed_Calibration *calibration = nullptr;
         float last_saved_ratio;
         uint8_t counter;
 #endif // AP_AIRSPEED_AUTOCAL_ENABLE
