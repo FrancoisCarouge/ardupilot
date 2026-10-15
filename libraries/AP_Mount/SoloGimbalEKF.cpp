@@ -653,10 +653,16 @@ void SoloGimbalEKF::fuseVelocity()
         // re-normalise the quaternion
         state.quat.normalize();
 
-        // Update the covariance
+        // Update the covariance, P = P - K*H*P. H*P is the row of the observed
+        // state, copied before the rows are corrected: corrected in place, the
+        // rows after it would use the observed state's corrected row
+        float HP[9];
+        for (uint8_t colIndex=0;colIndex<=8;colIndex++) {
+            HP[colIndex] = Cov[stateIndex][colIndex];
+        }
         for (uint8_t rowIndex=0;rowIndex<=8;rowIndex++) {
             for (uint8_t colIndex=0;colIndex<=8;colIndex++) {
-                Cov[rowIndex][colIndex] = Cov[rowIndex][colIndex] - K[rowIndex]*Cov[stateIndex][colIndex];
+                Cov[rowIndex][colIndex] -= K[rowIndex]*HP[colIndex];
             }
         }
 
@@ -926,7 +932,7 @@ void SoloGimbalEKF::fixCovariance()
     }
 
     // constrain diagonals to be non-negative
-    for (uint8_t index=1; index<=8; index++) {
+    for (uint8_t index=0; index<=8; index++) {
         if (Cov[index][index] < 0.0f) {
             Cov[index][index] = 0.0f;
         }
