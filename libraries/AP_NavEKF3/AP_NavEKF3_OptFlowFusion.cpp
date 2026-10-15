@@ -208,6 +208,13 @@ Equations generated using https://github.com/PX4/ecl/tree/master/EKF/matlab/scri
 */
 void NavEKF3_core::EstimateTerrainOffset(const of_elements &ofDataDelayed)
 {
+    using namespace NavEKF3_typed;
+    using mp_units::si::metre;
+    using mp_units::si::second;
+    using mp_units::si::radian;
+    using Variance = Quantity<square(metre)>;
+    using RateVariance = Quantity<square(radian / second)>;
+
     // horizontal velocity squared
     ftype velHorizSq = sq(stateStruct.velocity.x) + sq(stateStruct.velocity.y);
 
@@ -216,8 +223,8 @@ void NavEKF3_core::EstimateTerrainOffset(const of_elements &ofDataDelayed)
     // don't update terrain offset if ground is being used as the zero height datum in the main filter
     bool cantFuseFlowData = ((frontend->_flowUse != FLOW_USE_TERRAIN)
     || !gpsIsInUse
-    || PV_AidingMode == AID_RELATIVE 
-    || velHorizSq < 25.0f 
+    || PV_AidingMode == AID_RELATIVE
+    || velHorizSq < 25.0f
     || (MAX(ofDataDelayed.flowRadXY[0],ofDataDelayed.flowRadXY[1]) > frontend->_maxFlowRate));
 
     if ((!rangeDataToFuse && cantFuseFlowData) || (activeHgtSource == AP_NavEKF_Source::SourceZ::RANGEFINDER)) {
@@ -225,6 +232,14 @@ void NavEKF3_core::EstimateTerrainOffset(const of_elements &ofDataDelayed)
         inhibitGndState = true;
     } else {
         inhibitGndState = false;
+
+        // the terrain vertical position (down) and its variance
+        Position terrain = terrainState * metre;
+        Variance variance = Popt * square(metre);
+        const Position pd = stateStruct.position.z * metre;
+        const Position rangeOnGround = rngOnGnd * metre;
+        // the terrain is kept below the vehicle
+        const Position lowestTerrain = pd + rangeOnGround;
 
         // propagate ground position state noise each time this is called using the difference in position since the last observations and an RMS gradient assumption
         // limit distance to prevent intialisation after bad gps causing bad numerical conditioning
@@ -234,20 +249,22 @@ void NavEKF3_core::EstimateTerrainOffset(const of_elements &ofDataDelayed)
         prevPosE = stateStruct.position[1];
 
         // in addition to a terrain gradient error model, we also have the growth in uncertainty due to the copter's vertical velocity
-        ftype timeLapsed = MIN(0.001f * (imuSampleTime_ms - timeAtLastAuxEKF_ms), 1.0f);
-        ftype Pincrement = (distanceTravelledSq * sq(frontend->_terrGradMax)) + sq(timeLapsed)*P[6][6];
-        Popt += Pincrement;
+        const Quantity<second> timeLapsed = MIN(0.001f * (imuSampleTime_ms - timeAtLastAuxEKF_ms), 1.0f) * second;
+        const Quantity<square(metre / second)> velDownVariance = P[6][6] * square(metre / second);
+        const Unitless terrainGradient = ftype(frontend->_terrGradMax.get()) * mp_units::one;
+        const Variance Pincrement = (distanceTravelledSq * square(metre)) * (terrainGradient * terrainGradient) + (timeLapsed * timeLapsed) * velDownVariance;
+        variance += Pincrement;
         timeAtLastAuxEKF_ms = imuSampleTime_ms;
 
         // fuse range finder data
         if (rangeDataToFuse) {
             // reset terrain state if rangefinder data not fused for 5 seconds
             if (imuSampleTime_ms - gndHgtValidTime_ms > 5000) {
-                terrainState = MAX(rangeDataDelayed.rng * prevTnb.c.z, rngOnGnd) + stateStruct.position.z;
+                terrain = std::max(rangeDataDelayed.rng * prevTnb.c.z * metre, rangeOnGround) + pd;
             }
 
             // predict range
-            ftype predRngMeas = MAX((terrainState - stateStruct.position[2]),rngOnGnd) / prevTnb.c.z;
+            const Position predRngMeas = std::max(terrain - pd, rangeOnGround) / prevTnb.c.z;
             // Copy required states to local variable names
             ftype q0 = stateStruct.quat[0]; // quaternion at optical flow measurement time
             ftype q1 = stateStruct.quat[1]; // quaternion at optical flow measurement time
@@ -255,37 +272,39 @@ void NavEKF3_core::EstimateTerrainOffset(const of_elements &ofDataDelayed)
             ftype q3 = stateStruct.quat[3]; // quaternion at optical flow measurement time
 
             // Set range finder measurement noise variance. TODO make this a function of range and tilt to allow for sensor, alignment and AHRS errors
-            ftype R_RNG = frontend->_rngNoise.get();
+            const Variance R_RNG = frontend->_rngNoise.get() * square(metre);
 
-            // calculate Kalman gain
-            ftype SK_RNG = sq(q0) - sq(q1) - sq(q2) + sq(q3);
-            ftype K_RNG = Popt/(SK_RNG*(R_RNG + Popt/sq(SK_RNG)));
+            // calculate Kalman gain: the range is the height divided by SK_RNG
+            const ftype SK_RNG = sq(q0) - sq(q1) - sq(q2) + sq(q3);
+            const Variance varInnov = R_RNG + variance / sq(SK_RNG);
+            const Unitless K_RNG = variance / (SK_RNG * varInnov);
 
             // Calculate the innovation variance for data logging
-            varInnovRng = (R_RNG + Popt/sq(SK_RNG));
+            varInnovRng = varInnov.numerical_value_in(square(metre));
 
             // constrain terrain height to be below the vehicle
-            terrainState = MAX(terrainState, stateStruct.position[2] + rngOnGnd);
+            terrain = std::max(terrain, lowestTerrain);
 
             // Calculate the measurement innovation
-            innovRng = predRngMeas - rangeDataDelayed.rng;
+            const Position innov = predRngMeas - rangeDataDelayed.rng * metre;
+            innovRng = innov.numerical_value_in(metre);
 
             // calculate the innovation consistency test ratio
-            auxRngTestRatio = sq(innovRng) / (sq(MAX(0.01f * (ftype)frontend->_rngInnovGate, 1.0f)) * varInnovRng);
+            auxRngTestRatio = (innov * innov / varInnov).numerical_value_in(mp_units::one) / sq(MAX(0.01f * (ftype)frontend->_rngInnovGate, 1.0f));
 
             // Check the innovation test ratio and don't fuse if too large
             if (auxRngTestRatio < 1.0f) {
                 // correct the state
-                terrainState -= K_RNG * innovRng;
+                terrain -= K_RNG * innov;
 
                 // constrain the state
-                terrainState = MAX(terrainState, stateStruct.position[2] + rngOnGnd);
+                terrain = std::max(terrain, lowestTerrain);
 
                 // correct the covariance
-                Popt = Popt - sq(Popt)/(SK_RNG*(R_RNG + Popt/sq(SK_RNG))*(sq(q0) - sq(q1) - sq(q2) + sq(q3)));
+                variance = variance - variance * variance / (SK_RNG * varInnov * (sq(q0) - sq(q1) - sq(q2) + sq(q3)));
 
                 // prevent the state variance from becoming negative
-                Popt = MAX(Popt,0.0f);
+                variance = std::max(variance, ftype(0) * square(metre));
 
                 // record the time we last updated the terrain offset state
                 gndHgtValidTime_ms = imuSampleTime_ms;
@@ -300,108 +319,120 @@ void NavEKF3_core::EstimateTerrainOffset(const of_elements &ofDataDelayed)
             ftype q1 = stateStruct.quat[1]; // quaternion at optical flow measurement time
             ftype q2 = stateStruct.quat[2]; // quaternion at optical flow measurement time
             ftype q3 = stateStruct.quat[3]; // quaternion at optical flow measurement time
-            ftype K_OPT;
-            ftype H_OPT;
-            Vector2F auxFlowObsInnovVar;
+            const Velocity vn = stateStruct.velocity.x * NavEKF3_typed::metre_per_second;
+            const Velocity ve = stateStruct.velocity.y * NavEKF3_typed::metre_per_second;
+            const Velocity vd = stateStruct.velocity.z * NavEKF3_typed::metre_per_second;
 
             // predict range to centre of image
-            ftype flowRngPred = MAX((terrainState - stateStruct.position.z),rngOnGnd) / prevTnb.c.z;
+            const Position flowRngPred = std::max(terrain - pd, rangeOnGround) / prevTnb.c.z;
 
             // constrain terrain height to be below the vehicle
-            terrainState = MAX(terrainState, stateStruct.position.z + rngOnGnd);
+            terrain = std::max(terrain, lowestTerrain);
 
             // calculate relative velocity in sensor frame
             relVelSensor = prevTnb*stateStruct.velocity;
 
             // divide velocity by range, subtract body rates and apply scale factor to
             // get predicted sensed angular optical rates relative to X and Y sensor axes
-            losPred.x =   relVelSensor.y / flowRngPred;
-            losPred.y = - relVelSensor.x / flowRngPred;
+            losPred.x =   relVelSensor.y / flowRngPred.numerical_value_in(metre);
+            losPred.y = - relVelSensor.x / flowRngPred.numerical_value_in(metre);
 
-            // calculate innovations
+            // calculate innovations, of both axes before either is fused
             auxFlowObsInnov = losPred - ofDataDelayed.flowRadXYcomp;
+            constexpr auto rate = radian / second;
 
-            // calculate observation jacobians 
+            // calculate observation jacobians: the rate is the velocity divided by the height
             ftype t2 = q0*q0;
             ftype t3 = q1*q1;
             ftype t4 = q2*q2;
             ftype t5 = q3*q3;
-            ftype t6 = stateStruct.position.z - terrainState;
-            ftype t7 = 1.0f / (t6*t6);
-            ftype t8 = q0*q3*2.0f;
+            Position t6 = pd - terrain;
+            auto t7 = ftype(1) * radian / (t6*t6);
+            ftype t8 = q0*q3*2;
             ftype t9 = t2-t3-t4+t5;
 
             // prevent the state variances from becoming badly conditioned
-            Popt = MAX(Popt,1E-6f);
+            const Variance minVariance = ftype(1E-6f) * square(metre);
+            variance = std::max(variance, minVariance);
 
             // calculate observation noise variance from parameter
-            ftype flow_noise_variance = sq(MAX(frontend->_flowNoise, 0.05f));
+            const RateVariance flow_noise_variance = sq(MAX(frontend->_flowNoise, 0.05f)) * square(rate);
+            const ftype gate = sq(MAX(0.01f * (ftype)frontend->_flowInnovGate, 1.0f));
 
             // Fuse Y axis data
 
             // Calculate observation partial derivative
-            H_OPT = t7*t9*(-stateStruct.velocity.z*(q0*q2*2.0-q1*q3*2.0)+stateStruct.velocity.x*(t2+t3-t4-t5)+stateStruct.velocity.y*(t8+q1*q2*2.0));
+            {
+                const auto H_OPT = t7*t9*(-vd*(q0*q2*2-q1*q3*2)+vn*(t2+t3-t4-t5)+ve*(t8+q1*q2*2));
 
-            // calculate innovation variance
-            auxFlowObsInnovVar.y = H_OPT * Popt * H_OPT + flow_noise_variance;
+                // calculate innovation variance
+                const RateVariance innovVar = H_OPT * variance * H_OPT + flow_noise_variance;
 
-            // calculate Kalman gain
-            K_OPT = Popt * H_OPT / auxFlowObsInnovVar.y;
+                // calculate Kalman gain
+                const auto K_OPT = variance * H_OPT / innovVar;
 
-            // calculate the innovation consistency test ratio
-            auxFlowTestRatio.y = sq(auxFlowObsInnov.y) / (sq(MAX(0.01f * (ftype)frontend->_flowInnovGate, 1.0f)) * auxFlowObsInnovVar.y);
+                // calculate the innovation consistency test ratio
+                const Quantity<rate> innov = auxFlowObsInnov.y * rate;
+                auxFlowTestRatio.y = (innov * innov / innovVar).numerical_value_in(mp_units::one) / gate;
 
-            // don't fuse if optical flow data is outside valid range
-            if (auxFlowTestRatio.y < 1.0f) {
+                // don't fuse if optical flow data is outside valid range
+                if (auxFlowTestRatio.y < 1.0f) {
 
-                // correct the state
-                terrainState -= K_OPT * auxFlowObsInnov.y;
+                    // correct the state
+                    terrain -= K_OPT * innov;
 
-                // constrain the state
-                terrainState = MAX(terrainState, stateStruct.position.z + rngOnGnd);
+                    // constrain the state
+                    terrain = std::max(terrain, lowestTerrain);
 
-                // update intermediate variables used when fusing the X axis
-                t6 = stateStruct.position.z - terrainState;
-                t7 = 1.0f / (t6*t6);
+                    // update intermediate variables used when fusing the X axis
+                    t6 = pd - terrain;
+                    t7 = ftype(1) * radian / (t6*t6);
 
-                // correct the covariance
-                Popt = Popt - K_OPT * H_OPT * Popt;
+                    // correct the covariance
+                    variance = variance - K_OPT * H_OPT * variance;
 
-                // prevent the state variances from becoming badly conditioned
-                Popt = MAX(Popt,1E-6f);
+                    // prevent the state variances from becoming badly conditioned
+                    variance = std::max(variance, minVariance);
 
-                // record the time we last updated the terrain offset state
-                gndHgtValidTime_ms = imuSampleTime_ms;
+                    // record the time we last updated the terrain offset state
+                    gndHgtValidTime_ms = imuSampleTime_ms;
+                }
             }
 
             // fuse X axis data
-            H_OPT = -t7*t9*(stateStruct.velocity.z*(q0*q1*2.0+q2*q3*2.0)+stateStruct.velocity.y*(t2-t3+t4-t5)-stateStruct.velocity.x*(t8-q1*q2*2.0));
+            {
+                const auto H_OPT = -t7*t9*(vd*(q0*q1*2+q2*q3*2)+ve*(t2-t3+t4-t5)-vn*(t8-q1*q2*2));
 
-            // calculate innovation variances
-            auxFlowObsInnovVar.x = H_OPT * Popt * H_OPT + flow_noise_variance;
+                // calculate innovation variances
+                const RateVariance innovVar = H_OPT * variance * H_OPT + flow_noise_variance;
 
-            // calculate Kalman gain
-            K_OPT = Popt * H_OPT / auxFlowObsInnovVar.x;
+                // calculate Kalman gain
+                const auto K_OPT = variance * H_OPT / innovVar;
 
-            // calculate the innovation consistency test ratio
-            auxFlowTestRatio.x = sq(auxFlowObsInnov.x) / (sq(MAX(0.01f * (ftype)frontend->_flowInnovGate, 1.0f)) * auxFlowObsInnovVar.x);
+                // calculate the innovation consistency test ratio
+                const Quantity<rate> innov = auxFlowObsInnov.x * rate;
+                auxFlowTestRatio.x = (innov * innov / innovVar).numerical_value_in(mp_units::one) / gate;
 
-            // don't fuse if optical flow data is outside valid range
-            if (auxFlowTestRatio.x < 1.0f) {
+                // don't fuse if optical flow data is outside valid range
+                if (auxFlowTestRatio.x < 1.0f) {
 
-                // correct the state
-                terrainState -= K_OPT * auxFlowObsInnov.x;
+                    // correct the state
+                    terrain -= K_OPT * innov;
 
-                // constrain the state
-                terrainState = MAX(terrainState, stateStruct.position.z + rngOnGnd);
+                    // constrain the state
+                    terrain = std::max(terrain, lowestTerrain);
 
-                // correct the covariance
-                Popt = Popt - K_OPT * H_OPT * Popt;
+                    // correct the covariance
+                    variance = variance - K_OPT * H_OPT * variance;
 
-                // prevent the state variances from becoming badly conditioned
-                Popt = MAX(Popt,1E-6f);
+                    // prevent the state variances from becoming badly conditioned
+                    variance = std::max(variance, minVariance);
+                }
             }
         }
+
+        terrainState = terrain.numerical_value_in(metre);
+        Popt = variance.numerical_value_in(square(metre));
     }
 }
 
