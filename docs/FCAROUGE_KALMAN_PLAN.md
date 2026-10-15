@@ -1069,6 +1069,17 @@ source files, at the first line of each function.
   the library: it has three observations of two types on its one state, each gated, and a state clamp
   after each correction, none of which a library filter expresses.
 
+### Refresh 2026-10-15 (afternoon): rebase, bumps, resolved findings removed
+
+- Rebased on the fork's `master` `b032bcbde3` without conflict. Kalman bumped to `59c6e0d19`, mp-units to
+  `ef8653eab` (37 commits, conversion engine rewritten): no source change needed; SITL copter, plane and
+  unit tests build, 77 of 80 tests pass (the three death tests that predate the branch).
+- Owner decision: resolved findings and defects are removed, not kept as fixed. Removed F1, F3, F30, F32
+  (fixed), F19 (withdrawn); Kalman `BUG.md` keeps defects 9 (now only element values narrowing into
+  vector characteristics) and 10, after 2, 3, 4, 7 and 8 were found resolved on master; F13 and F14 still
+  apply to the new mp-units.
+- Owner decision: Kalman samples are written from each filter's published model (F40).
+
 ### Next (as of 2026-10-15)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
@@ -1090,7 +1101,6 @@ source files, at the first line of each function.
    upstream `master` before opening any, add candidates as they appear (the EKFGSF test ratio sign and
    the gimbal EKF covariance update, once a maintainer agrees). Keep the `todo` branches of Kalman and
    TypedLinearAlgebra in step with [FCAROUGE_FINDINGS.md](FCAROUGE_FINDINGS.md).
-9. Rebase on upstream `master` (`b032bcbde3` on 2026-10-15, past the `90976d9fdf` base).
 
 ## Appendix: stack probe
 
