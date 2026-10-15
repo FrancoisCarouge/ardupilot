@@ -1080,11 +1080,27 @@ source files, at the first line of each function.
   apply to the new mp-units.
 - Owner decision: Kalman samples are written from each filter's published model (F40).
 
+### EKF3 range beacon fusion (`NavEKF3_core::FuseRngBcn`)
+
+- Observation in m, Jacobian unitless for the three positions. Kept: the vertical difference zeroed and
+  the vertical gains masked unless the beacons are the height source; the `>=` conditioning test with its
+  covariance reset; the predicted range without the beacon's vertical offset.
+- Equivalence, side by side over `Copter.BeaconPosition` (2600 fusions): gains within 7e-16 of the
+  largest gain, variance 4e-16, `K H P` 1.1e-15 (double); 3.3e-7, 2.5e-7, 5.8e-7 (single). The beacon
+  height branch cannot be flown in that test (the EKF never aligns with `EK3_SRC1_POSZ` 4, before and
+  after the port), so it was compared with the height source forced in both versions: 6.4e-16 (double),
+  3.9e-7 (single).
+- Costs: beacons are built only above 2048 KB of program space, so not on CubeOrange or MatekF405;
+  on CubeRedPrimary the stack frame grows from 200 to 1344 bytes and flash shrinks by 268 bytes. 753 ns
+  per call typed against 469 ns generated (`--no-debug` SITL). g++ 15 `--Werror` and clang 20 build clean.
+- Environment: interrupted sessions wipe the scratchpad and kill background jobs; scripts and logs now
+  live in the workspace's `ardupilot/work/`, and autotests run detached.
+
 ### Next (as of 2026-10-15)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
-   and position, body frame velocity, optical flow done; next range beacon, then the terrain offset
-   estimator typed beside the library (F40), not on it.
+   and position, body frame velocity, optical flow, range beacon done; next the terrain offset estimator
+   typed beside the library (F40), not on it, then the static beacon alignment filter (`FuseRngBcnStatic`).
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
 3. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
    with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
