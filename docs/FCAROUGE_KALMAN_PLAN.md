@@ -1211,7 +1211,7 @@ source files, at the first line of each function.
 - Upstream compiles EKF2 out of firmware by default since 4.5 and has it "slated to be removed"
   (`AP_AHRS_config.h`); only SITL still builds it. The plane firmware sizes above are unchanged for that
   reason. Porting the other eight EKF2 fusions would type code on its way out: proposed to stop at this
-  pilot, owner to decide.
+  pilot, owner to decide. Owner decision (2026-10-15): stop at the pilot. Next: Kalman samples (F40).
 
 ### Next (as of 2026-10-15)
 
@@ -1225,10 +1225,10 @@ source files, at the first line of each function.
    with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
    updates (F7), callable F and Q with a transition function (F23), typed blocks or sparse rows (F26),
    repository size (F36). Report the mp-units freestanding defects (F14) to mp-units.
-4. Samples for the Kalman library (F40), with the owner: the terrain offset estimator first, written from
+4. Next (owner, 2026-10-15). Samples for the Kalman library (F40): the terrain offset estimator first, written from
    its model, not ArduPilot's GPL source.
-5. `SoloGimbalEKF` done (2026-10-15); EKF2: airspeed pilot done; EKF2 is compiled out of firmware and
-   slated for removal upstream, so the remaining fusions wait for an owner decision.
+5. `SoloGimbalEKF` done (2026-10-15); EKF2: stopped at the airspeed pilot (owner, 2026-10-15), EKF2 being
+   compiled out of firmware and slated for removal upstream.
 6. Gimbal EKF in-place covariance update: owner chose to fix it (2026-10-15), `ca5e6f1ca2`; effect in
    flight at most 8e-6 of the largest element (`Copter.MountSolo`). PR candidate 6; the typed port is
    compared against the fixed code.
