@@ -85,7 +85,7 @@ Kalman filters:
 | `AP_Mount/SoloGimbalEKF` (disabled by default) | EKF, 9 states | rad, m/s, rad/s | 5 |
 | `AP_NavEKF3` AGL filter (`UpdateAglKf`, option, new upstream in 2026-10) | KF 2x1x1 | m, m/s; u m/s^2 | 5, done 2026-10-14 |
 | `AP_NavEKF3` terrain offset (`EstimateTerrainOffset`) | EKF 1x1x0, range (m) and flow (rad/s) observations, gated | m | 7, done 2026-10-15 with quantities, beside the library (F40) |
-| `AP_NavEKF3` beacon alignment (`FuseRngBcnStatic`, found 2026-10-15) | EKF 3x1x0, range observations | m, m, m | 5, candidate for the library |
+| `AP_NavEKF3` beacon alignment (`FuseRngBcnStatic`, found 2026-10-15) | EKF 3x1x0, range observations | m, m, m | assessed 2026-10-15: not the library (F40), left as is |
 | `AP_NavEKF3` beacon vertical offset (`CalcRangeBeaconPosDownOffset`, found 2026-10-15) | two KF 1x1x0, one per height hypothesis | m | 5 |
 | `AP_NavEKF3` | 24-state EKF, sequential scalar fusion | mixed | 7 |
 | `AP_NavEKF2` | 24-state EKF | mixed | 8 |
@@ -1086,7 +1086,8 @@ source files, at the first line of each function.
 
 - Observation in m, Jacobian unitless for the three positions. Kept: the vertical difference zeroed and
   the vertical gains masked unless the beacons are the height source; the `>=` conditioning test with its
-  covariance reset; the predicted range without the beacon's vertical offset.
+  covariance reset; the beacon's vertical offset counted once in the predicted range and twice in the
+  Jacobian's distance (below).
 - Equivalence, side by side over `Copter.BeaconPosition` (2600 fusions): gains within 7e-16 of the
   largest gain, variance 4e-16, `K H P` 1.1e-15 (double); 3.3e-7, 2.5e-7, 5.8e-7 (single). The beacon
   height branch cannot be flown in that test (the EKF never aligns with `EK3_SRC1_POSZ` 4, before and
@@ -1114,12 +1115,34 @@ source files, at the first line of each function.
 - Costs on CubeOrange: stack frame 216 to 320 bytes, flash +396 bytes; 69 ns per call against 55 ns.
   g++ 15 `--Werror` and clang 20 clean.
 
+### Beacon alignment and vertical offset filters: assessed, not ported
+
+- `FuseRngBcnStatic`: 3-state EKF of the receiver position (m), process noise 0.1 m^2 per call on the
+  diagonal, scalar range observations gated except before alignment completes, `K H P` clamped to the
+  variances on the diagonal, the covariance symmetrized, the vertical state replaced from outside by the
+  height hypotheses. `CalcRangeBeaconPosDownOffset`: two 1-state filters of the vertical offset (m), one
+  per hypothesis, gated at 5 sigma except while aligning, innovation variance floored at the observation
+  variance, then a filtered state change selects the hypothesis with hysteresis.
+- Not the Kalman library (F40): gating with a bypass, a clamped covariance update, symmetrization, a
+  state edited between updates. All states are in metres, so typed matrices add no unit checking; only
+  the offset filters would gain from quantities. Left as they are for now.
+- Found while reading, for a maintainer (upstream code, unchanged by this branch):
+  `CalcRangeBeaconPosDownOffset` ends by adding the selected offset to the stored beacon position
+  (`rngBcn.dataDelayed.beacon_posNED.z += rngBcn.posOffsetNED.z`), then `FuseRngBcn` adds it again,
+  `bcn_pd = beacon_posNED.z + posOffsetNED.z`. With another height source the vertical Jacobian element is
+  zeroed, but `bcn_pd` still sets the distance `1/sqrt(t8)` that normalizes the horizontal ones, while the
+  predicted range uses the beacon position with the offset once: the horizontal gains are scaled by the
+  ratio of the two distances. `FuseRngBcnStatic` applies the offset twice in both its innovation and its
+  Jacobian, consistently, after the offset filter has run for the sample. To confirm and size in SITL
+  before proposing anything.
+
 ### Next (as of 2026-10-15)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
-   and position, body frame velocity, optical flow, range beacon, terrain offset estimator done; next
-   the beacon alignment filter (`FuseRngBcnStatic`) and its vertical offset filters on the library, if
-   they fit.
+   and position, body frame velocity, optical flow, range beacon, terrain offset estimator done. The
+   beacon alignment and offset filters stay as they are (assessed above). Every EKF3 fusion is now typed
+   (external navigation, odometry and GPS yaw go through the velocity and position, body velocity and yaw
+   fusions). Next: confirm and size the beacon offset applied twice; then items 5 and 7.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
 3. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
    with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
