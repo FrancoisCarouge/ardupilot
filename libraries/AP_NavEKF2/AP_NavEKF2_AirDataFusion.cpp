@@ -1,4 +1,5 @@
 #include "AP_NavEKF2_core.h"
+#include "AP_NavEKF2_typed.h"
 
 #include <AP_DAL/AP_DAL.h>
 
@@ -19,46 +20,45 @@
 */
 void NavEKF2_core::FuseAirspeed()
 {
+    using namespace NavEKF2_typed;
     // declarations
-    ftype vn;
-    ftype ve;
-    ftype vd;
-    ftype vwn;
-    ftype vwe;
     ftype EAS2TAS = dal.get_EAS2TAS();
     const ftype R_TAS = sq(constrain_ftype(frontend->_easNoise, 0.5f, 5.0f) * constrain_ftype(EAS2TAS, 0.9f, 10.0f));
-    Vector3 SH_TAS;
-    ftype SK_TAS;
-    Vector24 H_TAS;
     ftype VtasPred;
 
     // copy required states to local variable names
-    vn = stateStruct.velocity.x;
-    ve = stateStruct.velocity.y;
-    vd = stateStruct.velocity.z;
-    vwn = stateStruct.wind_vel.x;
-    vwe = stateStruct.wind_vel.y;
+    const StateView states{AP_LinearAlgebra::MatrixView<ftype, 24, 1>{&statesArray[0]}};
+    const Velocity vn = states.at<3>();
+    const Velocity ve = states.at<4>();
+    const Velocity vd = states.at<5>();
+    const Velocity vwn = states.at<22>();
+    const Velocity vwe = states.at<23>();
 
     // calculate the predicted airspeed
-    VtasPred = norm((ve - vwe) , (vn - vwn) , vd);
+    VtasPred = norm((ve - vwe).numerical_value_in(metre_per_second), (vn - vwn).numerical_value_in(metre_per_second),
+                    vd.numerical_value_in(metre_per_second));
     // perform fusion of True Airspeed measurement
     if (VtasPred > 1.0f)
     {
-        // calculate observation jacobians
-        SH_TAS[0] = 1.0f/(sqrtF(sq(ve - vwe) + sq(vn - vwn) + sq(vd)));
-        SH_TAS[1] = (SH_TAS[0]*(2*ve - 2*vwe))/2;
-        SH_TAS[2] = (SH_TAS[0]*(2*vn - 2*vwn))/2;
-        for (uint8_t i=0; i<=2; i++) H_TAS[i] = 0.0f;
-        H_TAS[3] = SH_TAS[2];
-        H_TAS[4] = SH_TAS[1];
-        H_TAS[5] = vd*SH_TAS[0];
-        H_TAS[22] = -SH_TAS[2];
-        H_TAS[23] = -SH_TAS[1];
-        for (uint8_t i=6; i<=21; i++) H_TAS[i] = 0.0f;
+        // calculate observation jacobians: the airspeed derivatives are the unitless
+        // components of the wind relative velocity direction
+        const auto SH_TAS_0 = 1 / (sqrtF(sq((ve - vwe).numerical_value_in(metre_per_second)) + sq((vn - vwn).numerical_value_in(metre_per_second)) +
+                                         sq(vd.numerical_value_in(metre_per_second))) * metre_per_second);
+        const Unitless SH_TAS_1 = (SH_TAS_0*(2*ve - 2*vwe))/2;
+        const Unitless SH_TAS_2 = (SH_TAS_0*(2*vn - 2*vwn))/2;
+        ObservationModel<Velocity> H_TAS{};
+        H_TAS.at<3>(SH_TAS_2);
+        H_TAS.at<4>(SH_TAS_1);
+        H_TAS.at<5>(vd*SH_TAS_0);
+        H_TAS.at<22>(-SH_TAS_2);
+        H_TAS.at<23>(-SH_TAS_1);
+
         // calculate Kalman gains
-        ftype temp = (R_TAS + SH_TAS[2]*(P[3][3]*SH_TAS[2] + P[4][3]*SH_TAS[1] - P[22][3]*SH_TAS[2] - P[23][3]*SH_TAS[1] + P[5][3]*vd*SH_TAS[0]) + SH_TAS[1]*(P[3][4]*SH_TAS[2] + P[4][4]*SH_TAS[1] - P[22][4]*SH_TAS[2] - P[23][4]*SH_TAS[1] + P[5][4]*vd*SH_TAS[0]) - SH_TAS[2]*(P[3][22]*SH_TAS[2] + P[4][22]*SH_TAS[1] - P[22][22]*SH_TAS[2] - P[23][22]*SH_TAS[1] + P[5][22]*vd*SH_TAS[0]) - SH_TAS[1]*(P[3][23]*SH_TAS[2] + P[4][23]*SH_TAS[1] - P[22][23]*SH_TAS[2] - P[23][23]*SH_TAS[1] + P[5][23]*vd*SH_TAS[0]) + vd*SH_TAS[0]*(P[3][5]*SH_TAS[2] + P[4][5]*SH_TAS[1] - P[22][5]*SH_TAS[2] - P[23][5]*SH_TAS[1] + P[5][5]*vd*SH_TAS[0]));
-        if (temp >= R_TAS) {
-            SK_TAS = 1.0f / temp;
+        const CovarianceView covariance{AP_LinearAlgebra::MatrixView<ftype, 24, 24>{&P[0][0]}};
+        const auto PHt = covariance * fcarouge::transposed(H_TAS);
+        const auto R = R_TAS * (metre_per_second * metre_per_second);
+        const auto S = (H_TAS * PHt).at() + R;
+        if (S >= R) {
             faultStatus.bad_airspeed = false;
         } else {
             // the calculation is badly conditioned, so we cannot perform fusion on this step
@@ -67,40 +67,19 @@ void NavEKF2_core::FuseAirspeed()
             faultStatus.bad_airspeed = true;
             return;
         }
-        Kfusion[0] = SK_TAS*(P[0][3]*SH_TAS[2] - P[0][22]*SH_TAS[2] + P[0][4]*SH_TAS[1] - P[0][23]*SH_TAS[1] + P[0][5]*vd*SH_TAS[0]);
-        Kfusion[1] = SK_TAS*(P[1][3]*SH_TAS[2] - P[1][22]*SH_TAS[2] + P[1][4]*SH_TAS[1] - P[1][23]*SH_TAS[1] + P[1][5]*vd*SH_TAS[0]);
-        Kfusion[2] = SK_TAS*(P[2][3]*SH_TAS[2] - P[2][22]*SH_TAS[2] + P[2][4]*SH_TAS[1] - P[2][23]*SH_TAS[1] + P[2][5]*vd*SH_TAS[0]);
-        Kfusion[3] = SK_TAS*(P[3][3]*SH_TAS[2] - P[3][22]*SH_TAS[2] + P[3][4]*SH_TAS[1] - P[3][23]*SH_TAS[1] + P[3][5]*vd*SH_TAS[0]);
-        Kfusion[4] = SK_TAS*(P[4][3]*SH_TAS[2] - P[4][22]*SH_TAS[2] + P[4][4]*SH_TAS[1] - P[4][23]*SH_TAS[1] + P[4][5]*vd*SH_TAS[0]);
-        Kfusion[5] = SK_TAS*(P[5][3]*SH_TAS[2] - P[5][22]*SH_TAS[2] + P[5][4]*SH_TAS[1] - P[5][23]*SH_TAS[1] + P[5][5]*vd*SH_TAS[0]);
-        Kfusion[6] = SK_TAS*(P[6][3]*SH_TAS[2] - P[6][22]*SH_TAS[2] + P[6][4]*SH_TAS[1] - P[6][23]*SH_TAS[1] + P[6][5]*vd*SH_TAS[0]);
-        Kfusion[7] = SK_TAS*(P[7][3]*SH_TAS[2] - P[7][22]*SH_TAS[2] + P[7][4]*SH_TAS[1] - P[7][23]*SH_TAS[1] + P[7][5]*vd*SH_TAS[0]);
-        Kfusion[8] = SK_TAS*(P[8][3]*SH_TAS[2] - P[8][22]*SH_TAS[2] + P[8][4]*SH_TAS[1] - P[8][23]*SH_TAS[1] + P[8][5]*vd*SH_TAS[0]);
-        Kfusion[9] = SK_TAS*(P[9][3]*SH_TAS[2] - P[9][22]*SH_TAS[2] + P[9][4]*SH_TAS[1] - P[9][23]*SH_TAS[1] + P[9][5]*vd*SH_TAS[0]);
-        Kfusion[10] = SK_TAS*(P[10][3]*SH_TAS[2] - P[10][22]*SH_TAS[2] + P[10][4]*SH_TAS[1] - P[10][23]*SH_TAS[1] + P[10][5]*vd*SH_TAS[0]);
-        Kfusion[11] = SK_TAS*(P[11][3]*SH_TAS[2] - P[11][22]*SH_TAS[2] + P[11][4]*SH_TAS[1] - P[11][23]*SH_TAS[1] + P[11][5]*vd*SH_TAS[0]);
-        Kfusion[12] = SK_TAS*(P[12][3]*SH_TAS[2] - P[12][22]*SH_TAS[2] + P[12][4]*SH_TAS[1] - P[12][23]*SH_TAS[1] + P[12][5]*vd*SH_TAS[0]);
-        Kfusion[13] = SK_TAS*(P[13][3]*SH_TAS[2] - P[13][22]*SH_TAS[2] + P[13][4]*SH_TAS[1] - P[13][23]*SH_TAS[1] + P[13][5]*vd*SH_TAS[0]);
-        Kfusion[14] = SK_TAS*(P[14][3]*SH_TAS[2] - P[14][22]*SH_TAS[2] + P[14][4]*SH_TAS[1] - P[14][23]*SH_TAS[1] + P[14][5]*vd*SH_TAS[0]);
-        Kfusion[15] = SK_TAS*(P[15][3]*SH_TAS[2] - P[15][22]*SH_TAS[2] + P[15][4]*SH_TAS[1] - P[15][23]*SH_TAS[1] + P[15][5]*vd*SH_TAS[0]);
-        Kfusion[22] = SK_TAS*(P[22][3]*SH_TAS[2] - P[22][22]*SH_TAS[2] + P[22][4]*SH_TAS[1] - P[22][23]*SH_TAS[1] + P[22][5]*vd*SH_TAS[0]);
-        Kfusion[23] = SK_TAS*(P[23][3]*SH_TAS[2] - P[23][22]*SH_TAS[2] + P[23][4]*SH_TAS[1] - P[23][23]*SH_TAS[1] + P[23][5]*vd*SH_TAS[0]);
+        const auto K = PHt / S;
+        for (uint8_t i=0; i<=23; i++) {
+            Kfusion[i] = K.data()(i);
+        }
         // zero Kalman gains to inhibit magnetic field state estimation
-        if (!inhibitMagStates) {
-            Kfusion[16] = SK_TAS*(P[16][3]*SH_TAS[2] - P[16][22]*SH_TAS[2] + P[16][4]*SH_TAS[1] - P[16][23]*SH_TAS[1] + P[16][5]*vd*SH_TAS[0]);
-            Kfusion[17] = SK_TAS*(P[17][3]*SH_TAS[2] - P[17][22]*SH_TAS[2] + P[17][4]*SH_TAS[1] - P[17][23]*SH_TAS[1] + P[17][5]*vd*SH_TAS[0]);
-            Kfusion[18] = SK_TAS*(P[18][3]*SH_TAS[2] - P[18][22]*SH_TAS[2] + P[18][4]*SH_TAS[1] - P[18][23]*SH_TAS[1] + P[18][5]*vd*SH_TAS[0]);
-            Kfusion[19] = SK_TAS*(P[19][3]*SH_TAS[2] - P[19][22]*SH_TAS[2] + P[19][4]*SH_TAS[1] - P[19][23]*SH_TAS[1] + P[19][5]*vd*SH_TAS[0]);
-            Kfusion[20] = SK_TAS*(P[20][3]*SH_TAS[2] - P[20][22]*SH_TAS[2] + P[20][4]*SH_TAS[1] - P[20][23]*SH_TAS[1] + P[20][5]*vd*SH_TAS[0]);
-            Kfusion[21] = SK_TAS*(P[21][3]*SH_TAS[2] - P[21][22]*SH_TAS[2] + P[21][4]*SH_TAS[1] - P[21][23]*SH_TAS[1] + P[21][5]*vd*SH_TAS[0]);
-        } else {
+        if (inhibitMagStates) {
             for (uint8_t i=16; i<=21; i++) {
                 Kfusion[i] = 0.0f;
             }
         }
 
         // calculate measurement innovation variance
-        varInnovVtas = 1.0f/SK_TAS;
+        varInnovVtas = S.numerical_value_in(metre_per_second * metre_per_second);
 
         // calculate measurement innovation
         innovVtas = VtasPred - tasDataDelayed.tas;
@@ -117,7 +96,7 @@ void NavEKF2_core::FuseAirspeed()
         } else {
             lastTasFailTime_ms = 0;
         }
-        
+
         // test the ratio before fusing data, forcing fusion if airspeed and position are timed out as we have no choice but to try and use airspeed to constrain error growth
         if (tasHealth || (tasTimeout && posTimeout)) {
 
@@ -137,32 +116,13 @@ void NavEKF2_core::FuseAirspeed()
             // This is used to correct the estimated quaternion on the current time step
             stateStruct.quat.rotate(stateStruct.angErr);
 
-            // correct the covariance P = (I - K*H)*P
-            // take advantage of the empty columns in KH to reduce the
-            // number of operations
+            // correct the covariance P = (I - K*H)*P. K*H*P is written to its
+            // array, its type checked against the covariance without being evaluated.
+            const auto HP = H_TAS * covariance;
+            static_assert(std::is_convertible_v<decltype(K * HP), Covariance>);
             for (unsigned i = 0; i<=stateIndexLim; i++) {
-                for (unsigned j = 0; j<=2; j++) {
-                    KH[i][j] = 0.0f;
-                }
-                for (unsigned j = 3; j<=5; j++) {
-                    KH[i][j] = Kfusion[i] * H_TAS[j];
-                }
-                for (unsigned j = 6; j<=21; j++) {
-                    KH[i][j] = 0.0f;
-                }
-                for (unsigned j = 22; j<=23; j++) {
-                    KH[i][j] = Kfusion[i] * H_TAS[j];
-                }
-            }
-            for (unsigned j = 0; j<=stateIndexLim; j++) {
-                for (unsigned i = 0; i<=stateIndexLim; i++) {
-                    ftype res = 0;
-                    res += KH[i][3] * P[3][j];
-                    res += KH[i][4] * P[4][j];
-                    res += KH[i][5] * P[5][j];
-                    res += KH[i][22] * P[22][j];
-                    res += KH[i][23] * P[23][j];
-                    KHP[i][j] = res;
+                for (unsigned j = 0; j<=stateIndexLim; j++) {
+                    KHP[i][j] = Kfusion[i] * HP.data()(j);
                 }
             }
             for (unsigned i = 0; i<=stateIndexLim; i++) {
