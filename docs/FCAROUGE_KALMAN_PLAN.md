@@ -85,6 +85,8 @@ Kalman filters:
 | `AP_Mount/SoloGimbalEKF` (disabled by default) | EKF, 9 states | rad, m/s, rad/s | 5 |
 | `AP_NavEKF3` AGL filter (`UpdateAglKf`, option, new upstream in 2026-10) | KF 2x1x1 | m, m/s; u m/s^2 | 5, done 2026-10-14 |
 | `AP_NavEKF3` terrain offset (`EstimateTerrainOffset`) | EKF 1x1x0, range (m) and flow (rad/s) observations, gated | m | 7, beside the library (F40) |
+| `AP_NavEKF3` beacon alignment (`FuseRngBcnStatic`, found 2026-10-15) | EKF 3x1x0, range observations | m, m, m | 5, candidate for the library |
+| `AP_NavEKF3` beacon vertical offset (`CalcRangeBeaconPosDownOffset`, found 2026-10-15) | two KF 1x1x0, one per height hypothesis | m | 5 |
 | `AP_NavEKF3` | 24-state EKF, sequential scalar fusion | mixed | 7 |
 | `AP_NavEKF2` | 24-state EKF | mixed | 8 |
 
@@ -1100,7 +1102,8 @@ source files, at the first line of each function.
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
    and position, body frame velocity, optical flow, range beacon done; next the terrain offset estimator
-   typed beside the library (F40), not on it, then the static beacon alignment filter (`FuseRngBcnStatic`).
+   typed beside the library (F40), not on it; then the beacon alignment filter (`FuseRngBcnStatic`) and its
+   vertical offset filters on the library, if they fit.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
 3. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
    with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
