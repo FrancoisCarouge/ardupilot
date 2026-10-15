@@ -1164,6 +1164,19 @@ source files, at the first line of each function.
   +1156 / -356 bytes of text, the rest outside the airspeed code, not traced; the two calibrations now
   live on the heap, allocated at init.
 
+### Objective 4: boundary audit of the typed filters
+
+- After the airspeed find, each typed filter's inputs were checked against what its callers pass: the
+  thermal EKF (netto climb rate in m/s against a strength in m/s), the precision landing filter (target
+  position in m, velocity input in m/s), the AGL filter (rangefinder height in m, acceleration in m/s/s),
+  the EKFGSF bank (delta angle in rad, delta velocity in m/s, intervals in s, GPS velocity and accuracy in
+  m/s, true airspeed in m/s), the IMU temperature correction and the EKF3 fusions. Only the airspeed
+  calibration was wrong.
+- EKFGSF interface: not typed. Its header reaches every EKF2 and EKF3 source through the cores' headers,
+  which hold it by pointer; typing it would bring unit headers and typed 3-vectors to about ten sources
+  and `Compass_learn.cpp` for an interface whose units, documented beside each parameter, match the
+  callers. The cores could forward-declare it to confine the header, a separate, header-only cleanup.
+
 ### Next (as of 2026-10-15)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
@@ -1181,8 +1194,8 @@ source files, at the first line of each function.
 5. `SoloGimbalEKF` and EKF2: the same typed fusions over views.
 6. Decide with a maintainer: the gimbal EKF in-place covariance update.
 7. Objective 4: done for the precision landing filter and the airspeed calibration (typed interfaces,
-   held by pointer so that the unit headers reach few sources); next the EKFGSF and AGL filters, and a
-   look at every typed filter's boundary for wrong declarations like the airspeed one.
+   held by pointer so that the unit headers reach few sources); boundaries audited; EKFGSF assessed
+   and left untyped; the AGL filter's interface is internal to the EKF3 core.
 8. Keep [FCAROUGE_PULL_REQUESTS.md](FCAROUGE_PULL_REQUESTS.md) current: recheck the five against
    upstream `master` before opening any, add candidates as they appear (the EKFGSF test ratio sign and
    the gimbal EKF covariance update, once a maintainer agrees). Keep the `todo` branches of Kalman and
