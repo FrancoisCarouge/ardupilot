@@ -21,6 +21,7 @@ AI assistance (AGENTS.md).
 | 3 | AP_Math: test polynomial fit | a154680822 | +49 lines, 1 file | no | proposed |
 | 4 | AP_AccelCal: add calibrator tests | 276f2a4446 | +73 lines, 2 files | no | proposed |
 | 5 | AP_NavEKF: test the EKFGSF yaw estimator | eabcf0b790 | +132 lines, 1 file | no | proposed |
+| 6 | AP_Mount: correct the gimbal EKF velocity covariance update | ca5e6f1ca2 | 12 lines, 1 file | yes, Solo gimbal only | proposed, owner agreed 2026-10-15 |
 
 ## 1. AP_Math: construct the test vector with parentheses
 
@@ -61,6 +62,18 @@ AI assistance (AGENTS.md).
   no estimate before velocity fusion, and an estimator constructed during static initialization.
 - Why: the estimator behind the emergency yaw reset has no unit test, only autotests.
 - Risk: test code only. Evidence: `test_ekfgsf_yaw` passes on `master` (4 tests).
+
+## 6. AP_Mount: correct the gimbal EKF velocity covariance update
+
+- What: `SoloGimbalEKF::fuseVelocity()` corrected the covariance in place, so the rows after the observed
+  velocity state used its already corrected row; the fix copies that row first, as `fuseCompass()` does.
+  `fixCovariance()` also skipped the first diagonal element in its non-negative clamp.
+- Why: P - K*H*P with the wrong H*P; on an arbitrary covariance the result is off by up to 16% of the
+  largest element.
+- Risk: flight code, but only with a Solo gimbal (`MNT1_TYPE` SoloGimbal), and the effect in flight is
+  small: at most 8e-6 of the largest covariance element over `Copter.MountSolo`, which passes. Applies to
+  `master` unchanged (the file is identical there); built on the branch, not yet on `master` alone.
+  Owner agreed (option 1, 2026-10-15); an upstream maintainer still has to.
 
 ## Not proposed, and why
 
