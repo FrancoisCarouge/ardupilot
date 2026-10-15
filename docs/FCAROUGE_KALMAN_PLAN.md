@@ -82,7 +82,7 @@ Kalman filters:
 | `AC_PrecLand/PosVelEKF` (x2 axes) | KF 2x1x1 | m, m/s; u m/s | 5 |
 | `AP_Airspeed/Airspeed_Calibration` | EKF 3x1x0 | m/s, m/s, 1/sqrt(ratio) | 5 |
 | `AP_NavEKF/EKFGSF_yaw` (bank of 5 + Gaussian sum) | EKF 3x2x0 | m/s, m/s, rad | 5 |
-| `AP_Mount/SoloGimbalEKF` (disabled by default) | EKF, 9 states | rad, m/s, rad/s | 5 |
+| `AP_Mount/SoloGimbalEKF` (disabled by default) | EKF, 9 states | rad, m/s, rad | fusions typed 2026-10-15, beside the library (F40) |
 | `AP_NavEKF3` AGL filter (`UpdateAglKf`, option, new upstream in 2026-10) | KF 2x1x1 | m, m/s; u m/s^2 | 5, done 2026-10-14 |
 | `AP_NavEKF3` terrain offset (`EstimateTerrainOffset`) | EKF 1x1x0, range (m) and flow (rad/s) observations, gated | m | 7, done 2026-10-15 with quantities, beside the library (F40) |
 | `AP_NavEKF3` beacon alignment (`FuseRngBcnStatic`, found 2026-10-15) | EKF 3x1x0, range observations | m, m, m | assessed 2026-10-15: not the library (F40), left as is |
@@ -1177,6 +1177,27 @@ source files, at the first line of each function.
   and `Compass_learn.cpp` for an interface whose units, documented beside each parameter, match the
   callers. The cores could forward-declare it to confine the header, a separate, header-only cleanup.
 
+### Solo gimbal EKF: covariance fix and typed fusions
+
+- Owner decision (2026-10-15): fix the in-place velocity covariance update (option 1). `ca5e6f1ca2`
+  copies the observed state's row before correcting, as the compass fusion does, and clamps the first
+  diagonal element too. Measured in `Copter.MountSolo`: the old and fixed updates differ by at most 8e-6
+  of the largest covariance element over 53400 fusions; the error term is K[i] K[s] P[s][j], small while
+  the velocity variance is small next to the 0.25 (m/s)^2 observation noise. PR candidate 6.
+- `ca63a044e3`: typed fusions over views of `states` and `Cov`, 9 states in rad, m/s, rad. The velocity
+  fusion uses a `direct_observation<index>` helper (typed column and row, as in EKF3); the compass fusion
+  types its heading Jacobian (dimensionless, its generated expressions unchanged) and computes gains and
+  correction with typed products. Not the Kalman library (F40).
+- Equivalence against the fixed code, both run on the same members (wrapper), over `Copter.MountSolo`:
+  velocity identical over 18000 calls, compass within 2.7e-8 of the largest covariance element and 4e-9
+  on the states over 1000 calls. Float only, no double build.
+- Costs: stack frames 160 to 400 bytes (`fuseVelocity`) and 208 to 336 (`fuseCompass`) on Cortex-M7 and
+  M4; CubeOrange copter with `--enable-SOLOGIMBAL` +1340 bytes of flash (MatekF405 cannot enable the mount).
+  Time: the arithmetic of one velocity observation is 6 ns scalar against 11 ns typed (host
+  micro-benchmark, SITL flags). In SITL the fusions measured 1 to 14 us either way from run to run: they
+  call into AHRS, whose locks dominate, so in-flight timing cannot compare them; time such code without
+  its AHRS calls. g++ 15 `--Werror` and clang 20 clean.
+
 ### Next (as of 2026-10-15)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
@@ -1191,7 +1212,7 @@ source files, at the first line of each function.
    repository size (F36). Report the mp-units freestanding defects (F14) to mp-units.
 4. Samples for the Kalman library (F40), with the owner: the terrain offset estimator first, written from
    its model, not ArduPilot's GPL source.
-5. `SoloGimbalEKF` and EKF2: the same typed fusions over views.
+5. `SoloGimbalEKF` done (2026-10-15); EKF2: the same typed fusions over views, next.
 6. Gimbal EKF in-place covariance update: owner chose to fix it (2026-10-15), `ca5e6f1ca2`; effect in
    flight at most 8e-6 of the largest element (`Copter.MountSolo`). PR candidate 6; the typed port is
    compared against the fixed code.
