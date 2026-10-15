@@ -88,7 +88,7 @@ Kalman filters:
 | `AP_NavEKF3` beacon alignment (`FuseRngBcnStatic`, found 2026-10-15) | EKF 3x1x0, range observations | m, m, m | assessed 2026-10-15: not the library (F40), left as is |
 | `AP_NavEKF3` beacon vertical offset (`CalcRangeBeaconPosDownOffset`, found 2026-10-15) | two KF 1x1x0, one per height hypothesis | m | 5 |
 | `AP_NavEKF3` | 24-state EKF, sequential scalar fusion | mixed | 7 |
-| `AP_NavEKF2` | 24-state EKF | mixed | 8 |
+| `AP_NavEKF2` | 24-state EKF | mixed | 8: airspeed pilot 2026-10-15; compiled out of firmware upstream, slated for removal |
 
 Heterogeneous linear algebra (TypedLinearAlgebra), surveyed 2026-10-06:
 
@@ -1198,6 +1198,21 @@ source files, at the first line of each function.
   call into AHRS, whose locks dominate, so in-flight timing cannot compare them; time such code without
   its AHRS calls. g++ 15 `--Werror` and clang 20 clean.
 
+### EKF2 pilot: true airspeed fusion, and EKF2's status upstream
+
+- `AP_NavEKF2_typed.h`: the 24 EKF2 states typed (angle error rad, velocity m/s, position m, delta angle
+  bias rad, gyro scale unitless, vertical delta velocity bias m/s, earth and body field gauss, wind m/s).
+  `1e6faeecd4`: `FuseAirspeed` typed as in EKF3, Jacobian unitless, gains and correction from typed
+  products; EKF2 corrects `P` itself rather than through `FinishFusion`.
+- Equivalence (wrapper over states, covariance, gains and the fusion's members) over `Plane.AIRSPEED_AUTOCAL`,
+  `Soaring` and `Deadreckoning`, 4000 fusions: gains within 6e-15 of the largest, covariance 2e-16, states
+  3e-14 (double); 1.6e-6, 1.2e-7, 7.6e-6 (single). Stack frame 456 to 1248 bytes on CubeOrange (EKF limit
+  2600), 104 to 632 on MatekF405 (limit 1300). g++ 15 `--Werror` and clang 20 clean.
+- Upstream compiles EKF2 out of firmware by default since 4.5 and has it "slated to be removed"
+  (`AP_AHRS_config.h`); only SITL still builds it. The plane firmware sizes above are unchanged for that
+  reason. Porting the other eight EKF2 fusions would type code on its way out: proposed to stop at this
+  pilot, owner to decide.
+
 ### Next (as of 2026-10-15)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
@@ -1212,7 +1227,8 @@ source files, at the first line of each function.
    repository size (F36). Report the mp-units freestanding defects (F14) to mp-units.
 4. Samples for the Kalman library (F40), with the owner: the terrain offset estimator first, written from
    its model, not ArduPilot's GPL source.
-5. `SoloGimbalEKF` done (2026-10-15); EKF2: the same typed fusions over views, next.
+5. `SoloGimbalEKF` done (2026-10-15); EKF2: airspeed pilot done; EKF2 is compiled out of firmware and
+   slated for removal upstream, so the remaining fusions wait for an owner decision.
 6. Gimbal EKF in-place covariance update: owner chose to fix it (2026-10-15), `ca5e6f1ca2`; effect in
    flight at most 8e-6 of the largest element (`Copter.MountSolo`). PR candidate 6; the typed port is
    compared against the fixed code.
