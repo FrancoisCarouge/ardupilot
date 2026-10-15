@@ -1225,7 +1225,8 @@ source files, at the first line of each function.
    with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
    updates (F7), callable F and Q with a transition function (F23), typed blocks or sparse rows (F26),
    repository size (F36). Report the mp-units freestanding defects (F14) to mp-units.
-4. Next (owner, 2026-10-15). Samples for the Kalman library (F40): the terrain offset estimator first, written from
+4. Samples for the Kalman library (F40, owner 2026-10-15): terrain offset estimator done (`sample-terrain`,
+   `92d83ca49`); next the beacon alignment filter and the gimbal EKF, written from
    its model, not ArduPilot's GPL source.
 5. `SoloGimbalEKF` done (2026-10-15); EKF2: stopped at the airspeed pilot (owner, 2026-10-15), EKF2 being
    compiled out of firmware and slated for removal upstream.
