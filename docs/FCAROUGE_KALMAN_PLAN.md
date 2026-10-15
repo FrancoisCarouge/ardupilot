@@ -1138,6 +1138,32 @@ source files, at the first line of each function.
   scale the horizontal gains by up to 3.2%. Small here, larger for larger offsets at short range;
   listed in [FCAROUGE_PULL_REQUESTS.md](FCAROUGE_PULL_REQUESTS.md) for a maintainer.
 
+### Objective 4: airspeed calibration interface, and a unit the typed filter had wrong
+
+- Typing the interface showed the filter's own types wrong. Its observation is the square root of the
+  differential pressure corrected to true airspeed (`sqrt(dpress) * EAS2TAS`), not an airspeed: with
+  airspeed = sqrt(ratio * pressure), the ratio is in (m/s)^2/Pa, the scale state 1/sqrt(ratio) in
+  sqrt(Pa) s/m, the observation in sqrt(Pa). The Phase 5 port had declared the observation m/s and the
+  scale unitless; two wrong declarations that agree check fine, because a float entering a typed
+  interface is whatever it is declared to be. Units checked inside a filter are only as right as its
+  boundaries.
+- Now: `Airspeed_Calibration.h` (its own header, included by `AP_Airspeed.cpp`, `Airspeed_Calibration.cpp`
+  and the test) with `RootPressure`, `Ratio`, `Scale`, typed `init`, `update`, `set_scale`, `get_state`,
+  `get_variances`, and `scale_of`/`ratio_of`; a `static_assert` that scale^2 ratio is dimensionless.
+  `AP_Airspeed` holds each calibration by pointer, allocated in `allocate()`, before the probe list
+  branch so that probe-listed boards keep the calibration they had.
+- mp-units' fractional powers (`sqrt(si::pascal)`) work through TypedLinearAlgebra and the Kalman library:
+  the Jacobian checks as sqrt(Pa)/(m/s) for the wind and m/s for the scale without change. The unit
+  functions are hidden friends, found by argument-dependent lookup only, and named like the maths
+  functions ArduPilot replaces by macros on single precision boards: the aliases sit between the maths
+  macro push and pop headers.
+- Verification: `test_airspeed_calibration` bit-identical before and after (scale 0.797232687, wind
+  3.0661757 and -3.96281242); `Plane.AIRSPEED_AUTOCAL` (ratio resets 1.240 and 3.311, within the run to
+  run variation seen before) and `Plane.AirspeedDrivers` pass; AP_Periph builds for MatekL431-Airspeed;
+  g++ and clang 20 clean. Airspeed symbols +40 bytes on CubeOrange, -74 on MatekF405; whole plane image
+  +1156 / -356 bytes of text, the rest outside the airspeed code, not traced; the two calibrations now
+  live on the heap, allocated at init.
+
 ### Next (as of 2026-10-15)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
@@ -1154,9 +1180,9 @@ source files, at the first line of each function.
    its model, not ArduPilot's GPL source.
 5. `SoloGimbalEKF` and EKF2: the same typed fusions over views.
 6. Decide with a maintainer: the gimbal EKF in-place covariance update.
-7. Objective 4: done for the precision landing filter (typed interface, filters allocated by
-   `AC_PrecLand::init()` so that the unit headers reach two sources); next the airspeed calibration,
-   EKFGSF and AGL filters the same way.
+7. Objective 4: done for the precision landing filter and the airspeed calibration (typed interfaces,
+   held by pointer so that the unit headers reach few sources); next the EKFGSF and AGL filters, and a
+   look at every typed filter's boundary for wrong declarations like the airspeed one.
 8. Keep [FCAROUGE_PULL_REQUESTS.md](FCAROUGE_PULL_REQUESTS.md) current: recheck the five against
    upstream `master` before opening any, add candidates as they appear (the EKFGSF test ratio sign and
    the gimbal EKF covariance update, once a maintainer agrees). Keep the `todo` branches of Kalman and
