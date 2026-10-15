@@ -1133,8 +1133,10 @@ source files, at the first line of each function.
   zeroed, but `bcn_pd` still sets the distance `1/sqrt(t8)` that normalizes the horizontal ones, while the
   predicted range uses the beacon position with the offset once: the horizontal gains are scaled by the
   ratio of the two distances. `FuseRngBcnStatic` applies the offset twice in both its innovation and its
-  Jacobian, consistently, after the offset filter has run for the sample. To confirm and size in SITL
-  before proposing anything.
+  Jacobian, consistently, after the offset filter has run for the sample. Sized in SITL
+  (`Copter.BeaconPosition`, a temporary print): offsets from -0.92 to 0.63 m at ranges of 6 to 43 m
+  scale the horizontal gains by up to 3.2%. Small here, larger for larger offsets at short range;
+  listed in [FCAROUGE_PULL_REQUESTS.md](FCAROUGE_PULL_REQUESTS.md) for a maintainer.
 
 ### Next (as of 2026-10-15)
 
@@ -1142,7 +1144,7 @@ source files, at the first line of each function.
    and position, body frame velocity, optical flow, range beacon, terrain offset estimator done. The
    beacon alignment and offset filters stay as they are (assessed above). Every EKF3 fusion is now typed
    (external navigation, odometry and GPS yaw go through the velocity and position, body velocity and yaw
-   fusions). Next: confirm and size the beacon offset applied twice; then items 5 and 7.
+   fusions). Next: items 5 and 7.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
 3. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
    with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential

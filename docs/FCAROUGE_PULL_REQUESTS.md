@@ -64,6 +64,12 @@ AI assistance (AGENTS.md).
 
 ## Not proposed, and why
 
+- AP_NavEKF3: the beacon vertical offset counted twice in the range beacon Jacobian (upstream code, found
+  2026-10-15, see the plan): with a height source other than the beacons, `FuseRngBcn` normalizes the
+  horizontal Jacobian by a distance whose vertical part has the offset twice, while the predicted range
+  has it once; up to 3.2% on the gains in `Copter.BeaconPosition`. A behaviour change in flight code:
+  ask a maintainer whether `bcn_pd` should drop the second offset before writing a fix.
+
 - AP_HAL_ChibiOS: unhide RCOutput base class overloads (e5057fe9b1): upstream pull request #32357 (open)
   already handles `timer_tick`; the branch also unhides `serial_led_send` when serial LEDs are
   disabled. Propose that as a review comment on #32357 rather than a second pull request.
