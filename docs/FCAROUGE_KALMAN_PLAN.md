@@ -84,7 +84,7 @@ Kalman filters:
 | `AP_NavEKF/EKFGSF_yaw` (bank of 5 + Gaussian sum) | EKF 3x2x0 | m/s, m/s, rad | 5 |
 | `AP_Mount/SoloGimbalEKF` (disabled by default) | EKF, 9 states | rad, m/s, rad/s | 5 |
 | `AP_NavEKF3` AGL filter (`UpdateAglKf`, option, new upstream in 2026-10) | KF 2x1x1 | m, m/s; u m/s^2 | 5, done 2026-10-14 |
-| `AP_NavEKF3` terrain offset (`EstimateTerrainOffset`) | EKF 1x1x0, two sequential observations | m | 5 |
+| `AP_NavEKF3` terrain offset (`EstimateTerrainOffset`) | EKF 1x1x0, range (m) and flow (rad/s) observations, gated | m | 7, beside the library (F40) |
 | `AP_NavEKF3` | 24-state EKF, sequential scalar fusion | mixed | 7 |
 | `AP_NavEKF2` | 24-state EKF | mixed | 8 |
 
@@ -1037,26 +1037,60 @@ CPU time per build; they need either a lighter quantity header (F22) or a filter
 pointer so that its header does not reach the callers. Until then the units start inside the filter
 source files, at the first line of each function.
 
-### Next (as of 2026-10-14)
+### EKF3 optical flow fusion (`NavEKF3_core::FuseOptFlow`)
+
+- Same method as the other fusions. The observation is the line of sight rate in rad/s; with the inverse
+  range carried as rad/m, the Jacobian elements check as rad/s per unit quaternion and rad/m for the
+  velocity, unchanged from the generated expressions. Gains, innovation variance and `K H P` come from the
+  typed products with the covariance view.
+- Kept as before: both axes use the Jacobian of the states read before the X axis fusion, while the
+  predicted rate reads the live velocity and the covariance is the live one; the quaternion, velocity and
+  position gains are never masked, the others are.
+- Equivalence in flight, side by side, over `Copter.OpticalFlowLimits`, `ModeFlowHold`,
+  `FlowGyroZBiasNoYawReference` and `EK3_OptflowTerrainScaleHeight`: gains within 3e-15 of the largest
+  gain of each fusion, innovation variance within 5e-16, `K H P` within 3e-15 (double precision); 1.2e-6,
+  3.4e-7 and 1.1e-6 in single precision. No fusion badly conditioned in one and not the other.
+- Costs on CubeOrange: stack frame of `FuseOptFlow()` 1112 to 1488 bytes (EKF limit 2600), copter flash
+  -2604 bytes. MatekF405 builds without optical flow (`AP_OPTICALFLOW_ENABLED` off), its firmware is
+  unchanged. Time per call in an optimized SITL (`--no-debug`, both axes): 645 ns typed against 364 ns
+  generated, the dense products again (F26).
+- Builds: g++ 15 with `--Werror`, clang 20 (no warning in the file; clang with `--Werror` stops earlier,
+  on upstream's `operator new` in `AP_Common/c++.cpp`), Arm GCC 15.2 for CubeOrange and MatekF405.
+
+### 2026-10-15: `todo` branches, filters the Kalman library cannot host
+
+- F21 reproduced on Kalman master `59c6e0d19` without ArduPilot, and found to be hidden by the Eigen
+  backend (its identity is an empty expression object that reads right even uninitialized). Recorded as
+  defect 10 in Kalman's `todo` branch `BUG.md`; the other open Kalman findings summarized in its
+  `TODO.md`; TypedLinearAlgebra's `todo` branch `BUG.md` synchronized with the findings table (F39 added).
+- Owner instruction (2026-10-15): an ArduPilot filter the Kalman library cannot quite accommodate is a
+  finding of missing functionality, and a candidate sample of the library. Recorded as F40: EKF3 and
+  EKF2, the gimbal EKF, and the terrain offset estimator, which item 1 of the previous list meant to put on
+  the library: it has three observations of two types on its one state, each gated, and a state clamp
+  after each correction, none of which a library filter expresses.
+
+### Next (as of 2026-10-15)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
-   and position, body frame velocity done; next optical flow and range beacon. Then the one-state
-   terrain offset filter (`EstimateTerrainOffset`) on the Kalman library, as the AGL filter now is.
-   The side-by-side check is generated from the previous source by a script, and must compare what the
-   previous code reads at each step, not only at entry.
+   and position, body frame velocity, optical flow done; next range beacon, then the terrain offset
+   estimator typed beside the library (F40), not on it.
 2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
 3. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
    with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
    updates (F7), callable F and Q with a transition function (F23), typed blocks or sparse rows (F26),
    repository size (F36). Report the mp-units freestanding defects (F14) to mp-units.
-4. `SoloGimbalEKF` and EKF2: the same typed fusions over views.
-5. Decide with a maintainer: the gimbal EKF in-place covariance update.
-6. Objective 4: done for the precision landing filter (typed interface, filters allocated by
+4. Samples for the Kalman library (F40), with the owner: the terrain offset estimator first, written from
+   its model, not ArduPilot's GPL source.
+5. `SoloGimbalEKF` and EKF2: the same typed fusions over views.
+6. Decide with a maintainer: the gimbal EKF in-place covariance update.
+7. Objective 4: done for the precision landing filter (typed interface, filters allocated by
    `AC_PrecLand::init()` so that the unit headers reach two sources); next the airspeed calibration,
    EKFGSF and AGL filters the same way.
-7. Keep [FCAROUGE_PULL_REQUESTS.md](FCAROUGE_PULL_REQUESTS.md) current: recheck the five against
+8. Keep [FCAROUGE_PULL_REQUESTS.md](FCAROUGE_PULL_REQUESTS.md) current: recheck the five against
    upstream `master` before opening any, add candidates as they appear (the EKFGSF test ratio sign and
-   the gimbal EKF covariance update, once a maintainer agrees).
+   the gimbal EKF covariance update, once a maintainer agrees). Keep the `todo` branches of Kalman and
+   TypedLinearAlgebra in step with [FCAROUGE_FINDINGS.md](FCAROUGE_FINDINGS.md).
+9. Rebase on upstream `master` (`b032bcbde3` on 2026-10-15, past the `90976d9fdf` base).
 
 ## Appendix: stack probe
 
