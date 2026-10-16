@@ -6,22 +6,22 @@ starts with five and grows as the work produces more; changes for the FrancoisCa
 in [FCAROUGE_FINDINGS.md](FCAROUGE_FINDINGS.md). See [FCAROUGE_KALMAN_PLAN.md](FCAROUGE_KALMAN_PLAN.md)
 for the work they come from.
 
-Each entry was cherry-picked onto upstream `master` 90976d9fdf (2026-10-14) without conflict and
-checked there: SITL with the default g++ 13 at `-std=gnu++11`, CubeOrange copter with the Arm GNU
-Toolchain 15.2, the named tests run. Before opening one: rebase on the current `master`, search for
-an open pull request on the same subject, follow `.github/PULL_REQUEST_TEMPLATE.md`, and state the
-AI assistance (AGENTS.md).
+Validated 2026-10-16: all seven commits cherry-picked onto upstream `master` `8ab6afde10` without
+conflict, in a separate worktree; there, SITL copter and the unit tests build with upstream's default g++
+at `-std=gnu++11`, CubeOrange copter builds with the Arm GNU Toolchain 15.2, and `test_control`,
+`test_polyfit`, `test_accel_calibrator`, `test_ekfgsf_yaw` and `Copter.MountSolo` pass. Hashes change
+with each rebase of `fcarouge`: the commit subjects identify the candidates. Before opening one: rebase
+on the current `master`, search for an open pull request on the same subject, follow
+`.github/PULL_REQUEST_TEMPLATE.md`, and state the AI assistance (AGENTS.md).
 
-2026-10-15: the branch rebased on `master` `b032bcbde3` without conflict; none of the five is upstream.
-
-| # | Title | Commits on `fcarouge` | Size | Flight code | Status |
+| # | Title | Commits on `fcarouge` (2026-10-16) | Size | Flight code | Status |
 |---|---|---|---|---|---|
-| 1 | AP_Math: construct the test vector with parentheses | 504c43f6b1 | 1 line, 1 file | no | proposed |
-| 2 | Avoid deprecated increments of volatile | 6148e3042b, 675b10da4c | 12 lines, 3 files | yes, identical code | proposed |
-| 3 | AP_Math: test polynomial fit | a154680822 | +49 lines, 1 file | no | proposed |
-| 4 | AP_AccelCal: add calibrator tests | 276f2a4446 | +73 lines, 2 files | no | proposed |
-| 5 | AP_NavEKF: test the EKFGSF yaw estimator | eabcf0b790 | +132 lines, 1 file | no | proposed |
-| 6 | AP_Mount: correct the gimbal EKF velocity covariance update | ca5e6f1ca2 | 12 lines, 1 file | yes, Solo gimbal only | proposed, owner agreed 2026-10-15 |
+| 1 | AP_Math: construct the test vector with parentheses | 6c199978a9 | 1 line, 1 file | no | proposed |
+| 2 | Avoid deprecated increments of volatile | 7b18c80ba0, 7f44cf401d | 12 lines, 3 files | yes, identical code | proposed |
+| 3 | AP_Math: test polynomial fit | ba26e652d5 | +49 lines, 1 file | no | proposed |
+| 4 | AP_AccelCal: add calibrator tests | f771720c55 | +73 lines, 2 files | no | proposed |
+| 5 | AP_NavEKF: test the EKFGSF yaw estimator | 71194df67d | +132 lines, 1 file | no | proposed |
+| 6 | AP_Mount: correct the gimbal EKF velocity covariance update | 4326b2d2fc | 12 lines, 1 file | yes, Solo gimbal only | proposed, owner agreed 2026-10-15 |
 
 ## 1. AP_Math: construct the test vector with parentheses
 
@@ -71,8 +71,8 @@ AI assistance (AGENTS.md).
 - Why: P - K*H*P with the wrong H*P; on an arbitrary covariance the result is off by up to 16% of the
   largest element.
 - Risk: flight code, but only with a Solo gimbal (`MNT1_TYPE` SoloGimbal), and the effect in flight is
-  small: at most 8e-6 of the largest covariance element over `Copter.MountSolo`, which passes. Applies to
-  `master` unchanged (the file is identical there); built on the branch, not yet on `master` alone.
+  small: at most 8e-6 of the largest covariance element over `Copter.MountSolo`, which passes on
+  `master` with the fix alone.
   Owner agreed (option 1, 2026-10-15); an upstream maintainer still has to.
 
 ## Not proposed, and why
