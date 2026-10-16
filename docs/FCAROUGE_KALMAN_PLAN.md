@@ -1222,34 +1222,22 @@ source files, at the first line of each function.
 - Kalman: `todo` and the three sample branches rebased on `master`; the samples build and pass under the
   new warning flags with clang 21 and g++ 14. TypedLinearAlgebra: `master` merged into `todo`.
 
-### Next (as of 2026-10-15)
+### Next (as of 2026-10-16)
 
-1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
-   and position, body frame velocity, optical flow, range beacon, terrain offset estimator done. The
-   beacon alignment and offset filters stay as they are (assessed above). Every EKF3 fusion is now typed
-   (external navigation, odometry and GPS yaw go through the velocity and position, body velocity and yaw
-   fusions). Next: items 5 and 7.
-2. EKF3 covariance prediction: stays generated until evaluation in place exists upstream.
-3. Upstream (Phase 2), unchanged order: in-place typed operations (F28), update and prediction written
-   with them (F38, F37), the simple covariance update (F8), a two-stage update and scalar sequential
-   updates (F7), callable F and Q with a transition function (F23), typed blocks or sparse rows (F26),
-   repository size (F36). Report the mp-units freestanding defects (F14) to mp-units.
-4. Samples for the Kalman library (F40, owner 2026-10-15), one branch each: terrain offset estimator
-   (`sample-terrain`, `92d83ca49`), beacon alignment (`sample-beacon`, `d3854d3ab`), gimbal EKF
-   (`sample-gimbal`, `e7e80e683`), all written from
-   its model, not ArduPilot's GPL source.
-5. `SoloGimbalEKF` done (2026-10-15); EKF2: stopped at the airspeed pilot (owner, 2026-10-15), EKF2 being
-   compiled out of firmware and slated for removal upstream.
-6. Gimbal EKF in-place covariance update: owner chose to fix it (2026-10-15), `ca5e6f1ca2`; effect in
-   flight at most 8e-6 of the largest element (`Copter.MountSolo`). PR candidate 6; the typed port is
-   compared against the fixed code.
-7. Objective 4: done for the precision landing filter and the airspeed calibration (typed interfaces,
-   held by pointer so that the unit headers reach few sources); boundaries audited; EKFGSF assessed
-   and left untyped; the AGL filter's interface is internal to the EKF3 core.
-8. Keep [FCAROUGE_PULL_REQUESTS.md](FCAROUGE_PULL_REQUESTS.md) current: recheck the five against
-   upstream `master` before opening any, add candidates as they appear (the EKFGSF test ratio sign and
-   the gimbal EKF covariance update, once a maintainer agrees). Keep the `todo` branches of Kalman and
-   TypedLinearAlgebra in step with [FCAROUGE_FINDINGS.md](FCAROUGE_FINDINGS.md).
+Done: every EKF3 fusion, the terrain offset estimator, the gimbal EKF fusions (with its covariance fix)
+and the EKF2 airspeed pilot typed beside the library; the thermal, precision landing, airspeed
+calibration, EKFGSF and AGL filters on the library; typed interfaces where they pay (objective 4); three
+Kalman samples (F40).
+
+1. Owner decisions on the proposals in the `todo` branches: TypedLinearAlgebra in-place evaluation and
+   blocks (F28, F26, F39); Kalman consistency test, post-update constraint, covariance correction form,
+   the `hh_ff_us_ps` configuration, several output types (F7, F8, F23, F40). They unblock the EKF3
+   covariance prediction (still generated) and EKF-sized filters on the library.
+2. PR candidates 1 to 6 validated on `master` `8ab6afde10`: ready to open, smallest first, on the owner's go.
+3. Maintainer items, not proposed yet: the doubled beacon offset in `FuseRngBcn` (up to 3.2% on the
+   gains), the terrain estimator's stale X axis flow innovation.
+4. A fourth sample, an EKF3 subset (scalar fusions with masked gains), if the owner wants one of that size.
+5. Keep the three projects rebased, the findings rechecked and mirrored, the PR list validated.
 
 ## Appendix: stack probe
 
