@@ -1213,6 +1213,15 @@ source files, at the first line of each function.
   reason. Porting the other eight EKF2 fusions would type code on its way out: proposed to stop at this
   pilot, owner to decide. Owner decision (2026-10-15): stop at the pilot. Next: Kalman samples (F40).
 
+### Refresh 2026-10-16: rebase, bumps
+
+- Rebased on `master` `8ab6afde10`; Kalman `0c6e4ad64` (warning flags only, headers unchanged), TypedLinearAlgebra
+  `44f245794` (relies on mp-units' own vector quantity tuple protocol), mp-units `c85584d65` (34 commits):
+  no source change. SITL copter, plane and tests build, 77 of 80 unit tests pass (the three death tests),
+  the 11 EKF and filter autotests pass, CubeOrange copter and MatekF405 plane build.
+- Kalman: `todo` and the three sample branches rebased on `master`; the samples build and pass under the
+  new warning flags with clang 21 and g++ 14. TypedLinearAlgebra: `master` merged into `todo`.
+
 ### Next (as of 2026-10-15)
 
 1. Phase 7, fusion by fusion: airspeed, sideslip, drag, 3-axis magnetometer, declination, yaw, velocity
