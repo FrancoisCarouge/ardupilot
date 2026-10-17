@@ -1237,7 +1237,10 @@ Kalman samples (F40).
 3. Maintainer items, not proposed yet: the doubled beacon offset in `FuseRngBcn` (up to 3.2% on the
    gains), the terrain estimator's stale X axis flow innovation.
 4. A fourth sample, an EKF3 subset (scalar fusions with masked gains), if the owner wants one of that size.
-5. Keep the three projects rebased, the findings rechecked and mirrored, the PR list validated.
+5. When Kalman #1026 merges (F21 fix): move `AP_LinearAlgebra_Kalman.h`'s `one`/`zero` specializations to the
+   `ones`/`zeros` factories, and drop the construct-on-first-use storage of the precision landing, airspeed
+   and AGL filters; if the named values move to TypedLinearAlgebra (F41), take them from there.
+6. Keep the three projects rebased, the findings rechecked and mirrored, the PR list validated.
 
 ## Appendix: stack probe
 
