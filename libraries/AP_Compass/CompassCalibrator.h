@@ -111,14 +111,6 @@ private:
     // results
     class param_t {
     public:
-        float* get_sphere_params() {
-            return &radius;
-        }
-
-        float* get_ellipsoid_params() {
-            return &offset.x;
-        }
-
         float radius;       // magnetic field strength calculated from samples
         Vector3f offset;    // offsets
         Vector3f diag;      // diagonal scaling
@@ -191,6 +183,14 @@ private:
     // run ellipsoid fit to calculate diagonals and offdiagonals
     void calc_ellipsoid_jacob(const Vector3f& sample, const param_t& params, float* ret) const;
     void run_ellipsoid_fit();
+
+    // the parameters, as typed vectors, of the sphere and ellipsoid fits
+    struct SphereFit;
+    struct EllipsoidFit;
+
+    // run one Levenberg-Marquardt iteration of a fit, with its damping lambda
+    template <typename Fit>
+    void run_fit(float &lambda);
 
     // update the completion mask based on a single sample
     void update_completion_mask(const Vector3f& sample);

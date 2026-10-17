@@ -69,6 +69,10 @@
 #include <AP_GPS/AP_GPS.h>
 #include <GCS_MAVLink/GCS.h>
 #include <AP_InternalError/AP_InternalError.h>
+#include <AP_LinearAlgebra/AP_LinearAlgebra.h>
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Units.h>
+
+#include <type_traits>
 
 #define FIELD_RADIUS_MIN 150
 #define FIELD_RADIUS_MAX 950
@@ -678,92 +682,6 @@ void CompassCalibrator::calc_sphere_jacob(const Vector3f& sample, const param_t&
 }
 
 // run sphere fit to calculate diagonals and offdiagonals
-void CompassCalibrator::run_sphere_fit()
-{
-    if (_sample_buffer == nullptr) {
-        return;
-    }
-
-    const float lma_damping = 10.0f;
-
-    // take backup of fitness and parameters so we can determine later if this fit has improved the calibration
-    float fitness = _fitness;
-    float fit1, fit2;
-    param_t fit1_params, fit2_params;
-    fit1_params = fit2_params = _params;
-
-    float JTJ[COMPASS_CAL_NUM_SPHERE_PARAMS*COMPASS_CAL_NUM_SPHERE_PARAMS] = { };
-    float JTJ2[COMPASS_CAL_NUM_SPHERE_PARAMS*COMPASS_CAL_NUM_SPHERE_PARAMS] = { };
-    float JTFI[COMPASS_CAL_NUM_SPHERE_PARAMS] = { };
-
-    // Gauss Newton Part common for all kind of extensions including LM
-    for (uint16_t k = 0; k<_samples_collected; k++) {
-        Vector3f sample = _sample_buffer[k].get();
-
-        float sphere_jacob[COMPASS_CAL_NUM_SPHERE_PARAMS];
-
-        calc_sphere_jacob(sample, fit1_params, sphere_jacob);
-
-        for (uint8_t i = 0;i < COMPASS_CAL_NUM_SPHERE_PARAMS; i++) {
-            // compute JTJ
-            for (uint8_t j = 0; j < COMPASS_CAL_NUM_SPHERE_PARAMS; j++) {
-                JTJ[i*COMPASS_CAL_NUM_SPHERE_PARAMS+j] += sphere_jacob[i] * sphere_jacob[j];
-                JTJ2[i*COMPASS_CAL_NUM_SPHERE_PARAMS+j] += sphere_jacob[i] * sphere_jacob[j];   //a backup JTJ for LM
-            }
-            // compute JTFI
-            JTFI[i] += sphere_jacob[i] * calc_residual(sample, fit1_params);
-        }
-    }
-
-    //------------------------Levenberg-Marquardt-part-starts-here---------------------------------//
-    // refer: http://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm#Choice_of_damping_parameter
-    for (uint8_t i = 0; i < COMPASS_CAL_NUM_SPHERE_PARAMS; i++) {
-        JTJ[i*COMPASS_CAL_NUM_SPHERE_PARAMS+i] += _sphere_lambda;
-        JTJ2[i*COMPASS_CAL_NUM_SPHERE_PARAMS+i] += _sphere_lambda/lma_damping;
-    }
-
-    if (!mat_inverse(JTJ, JTJ, 4)) {
-        return;
-    }
-
-    if (!mat_inverse(JTJ2, JTJ2, 4)) {
-        return;
-    }
-
-    // extract radius, offset, diagonals and offdiagonal parameters
-    for (uint8_t row=0; row < COMPASS_CAL_NUM_SPHERE_PARAMS; row++) {
-        for (uint8_t col=0; col < COMPASS_CAL_NUM_SPHERE_PARAMS; col++) {
-            fit1_params.get_sphere_params()[row] -= JTFI[col] * JTJ[row*COMPASS_CAL_NUM_SPHERE_PARAMS+col];
-            fit2_params.get_sphere_params()[row] -= JTFI[col] * JTJ2[row*COMPASS_CAL_NUM_SPHERE_PARAMS+col];
-        }
-    }
-
-    // calculate fitness of two possible sets of parameters
-    fit1 = calc_mean_squared_residuals(fit1_params);
-    fit2 = calc_mean_squared_residuals(fit2_params);
-
-    // decide which of the two sets of parameters is best and store in fit1_params
-    if (fit1 > _fitness && fit2 > _fitness) {
-        // if neither set of parameters provided better results, increase lambda
-        _sphere_lambda *= lma_damping;
-    } else if (fit2 < _fitness && fit2 < fit1) {
-        // if fit2 was better we will use it. decrease lambda
-        _sphere_lambda /= lma_damping;
-        fit1_params = fit2_params;
-        fitness = fit2;
-    } else if (fit1 < _fitness) {
-        fitness = fit1;
-    }
-    //--------------------Levenberg-Marquardt-part-ends-here--------------------------------//
-
-    // store new parameters and update fitness
-    if (!isnan(fitness) && fitness < _fitness) {
-        _fitness = fitness;
-        _params = fit1_params;
-        update_completion_mask();
-    }
-}
-
 void CompassCalibrator::calc_ellipsoid_jacob(const Vector3f& sample, const param_t& params, float* ret) const
 {
     const Vector3f &offset = params.offset;
@@ -794,8 +712,157 @@ void CompassCalibrator::calc_ellipsoid_jacob(const Vector3f& sample, const param
     ret[8] = -1.0f * (((sample.z + offset.z) * B) + ((sample.y + offset.y) * C))/length;
 }
 
-void CompassCalibrator::run_ellipsoid_fit()
+namespace {
+
+using AP_LinearAlgebra::ColumnVector;
+using AP_LinearAlgebra::RowVector;
+using AP_LinearAlgebra::Units::Milligauss;
+using AP_LinearAlgebra::Units::Unitless;
+using AP_LinearAlgebra::Units::milligauss;
+
+/*
+  the normal equations and their solution are kept out of run_fit(): typed
+  matrix operations return values, and these temporaries would otherwise add
+  up in a single stack frame
+ */
+template <typename NormalMatrix, typename Jacobian>
+NOINLINE void accumulate(NormalMatrix &JTJ, const Jacobian &J)
 {
+    // JTJ = JTJ + transpose(J) * J, with the units checked on the typed
+    // expression and the elements added in place: the typed expression
+    // copies the whole matrix at each operation, too much stack on a
+    // microcontroller
+    static_assert(std::is_same_v<decltype(JTJ + fcarouge::transposed(J) * J), NormalMatrix>);
+    auto &jtj = JTJ.data();
+    const auto &j = J.data();
+    for (size_t row = 0; row < NormalMatrix::rows; row++) {
+        for (size_t col = 0; col < NormalMatrix::columns; col++) {
+            jtj(row, col) += j(row) * j(col);
+        }
+    }
+}
+
+template <typename NormalVector, typename Jacobian>
+NOINLINE void accumulate(NormalVector &JTFI, const Jacobian &J, const Milligauss &residual)
+{
+    JTFI = JTFI + fcarouge::transposed(J) * residual;
+}
+
+/*
+  Levenberg-Marquardt damping: add lambda to each diagonal element of JTJ.
+  The fits have always added the same number to every diagonal element,
+  whatever its unit: lambda counts as 1 for a radius or an offset, whose
+  diagonal elements are unitless, and as 1 mGauss^2 for a scale factor. The
+  elements are added in place to keep this behaviour, unit-inconsistent for
+  the ellipsoid fit.
+ */
+template <typename NormalMatrix>
+NOINLINE void damp(NormalMatrix &JTJ, float lambda)
+{
+    auto &jtj = JTJ.data();
+    for (size_t i = 0; i < NormalMatrix::rows; i++) {
+        jtj(i, i) += lambda;
+    }
+}
+
+// Gauss Newton step: solve JTJ * delta = JTFI, JTJ being symmetric; a
+// singular JTJ gives non-finite elements
+template <typename Params, typename NormalMatrix, typename NormalVector>
+NOINLINE Params solve(const NormalMatrix &JTJ, const NormalVector &JTFI)
+{
+    return fcarouge::transposed(fcarouge::transposed(JTFI) / JTJ);
+}
+
+template <typename Params>
+bool is_finite(const Params &x)
+{
+    for (size_t i = 0; i < Params::rows; i++) {
+        if (!isfinite(x.data()(i))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+/*
+  the sphere fit's parameters: the radius and offsets (mGauss); the partial
+  derivatives of a residual (mGauss) with respect to them are unitless
+ */
+struct CompassCalibrator::SphereFit {
+    using Params = ColumnVector<float, Milligauss, Milligauss, Milligauss, Milligauss>;
+    using Jacobian = RowVector<float, Unitless, Unitless, Unitless, Unitless>;
+
+    static Params params(const param_t &p)
+    {
+        const auto mG = milligauss;
+        return Params{p.radius * mG, p.offset.x * mG, p.offset.y * mG, p.offset.z * mG};
+    }
+    static void set(param_t &p, const Params &x)
+    {
+        const auto mG = milligauss;
+        p.radius = x.at<0>().numerical_value_in(mG);
+        p.offset = Vector3f(x.at<1>().numerical_value_in(mG), x.at<2>().numerical_value_in(mG), x.at<3>().numerical_value_in(mG));
+    }
+    static Jacobian jacobian(const CompassCalibrator &calibrator, const Vector3f &sample, const param_t &p)
+    {
+        float j[COMPASS_CAL_NUM_SPHERE_PARAMS];
+        calibrator.calc_sphere_jacob(sample, p, j);
+        const auto u = mp_units::one;
+        return Jacobian{j[0] * u, j[1] * u, j[2] * u, j[3] * u};
+    }
+};
+
+/*
+  the ellipsoid fit's parameters: the offsets (mGauss), diagonal and
+  off-diagonal scale factors (unitless); and the partial derivatives of a
+  residual (mGauss) with respect to them
+ */
+struct CompassCalibrator::EllipsoidFit {
+    using Params = ColumnVector<float,
+                                Milligauss, Milligauss, Milligauss,
+                                Unitless, Unitless, Unitless,
+                                Unitless, Unitless, Unitless>;
+    using Jacobian = RowVector<float,
+                               Unitless, Unitless, Unitless,
+                               Milligauss, Milligauss, Milligauss,
+                               Milligauss, Milligauss, Milligauss>;
+
+    static Params params(const param_t &p)
+    {
+        const auto mG = milligauss;
+        const auto u = mp_units::one;
+        return Params{p.offset.x * mG, p.offset.y * mG, p.offset.z * mG,
+                      p.diag.x * u, p.diag.y * u, p.diag.z * u,
+                      p.offdiag.x * u, p.offdiag.y * u, p.offdiag.z * u};
+    }
+    static void set(param_t &p, const Params &x)
+    {
+        const auto mG = milligauss;
+        const auto u = mp_units::one;
+        p.offset = Vector3f(x.at<0>().numerical_value_in(mG), x.at<1>().numerical_value_in(mG), x.at<2>().numerical_value_in(mG));
+        p.diag = Vector3f(x.at<3>().numerical_value_in(u), x.at<4>().numerical_value_in(u), x.at<5>().numerical_value_in(u));
+        p.offdiag = Vector3f(x.at<6>().numerical_value_in(u), x.at<7>().numerical_value_in(u), x.at<8>().numerical_value_in(u));
+    }
+    static Jacobian jacobian(const CompassCalibrator &calibrator, const Vector3f &sample, const param_t &p)
+    {
+        float j[COMPASS_CAL_NUM_ELLIPSOID_PARAMS];
+        calibrator.calc_ellipsoid_jacob(sample, p, j);
+        const auto mG = milligauss;
+        const auto u = mp_units::one;
+        return Jacobian{j[0] * u, j[1] * u, j[2] * u, j[3] * mG, j[4] * mG, j[5] * mG, j[6] * mG, j[7] * mG, j[8] * mG};
+    }
+};
+
+template <typename Fit>
+void CompassCalibrator::run_fit(float &lambda)
+{
+    using Params = typename Fit::Params;
+    using Jacobian = typename Fit::Jacobian;
+    using NormalMatrix = decltype(fcarouge::transposed(Jacobian{}) * Jacobian{});
+    using NormalVector = decltype(fcarouge::transposed(Jacobian{}) * Milligauss{});
+
     if (_sample_buffer == nullptr) {
         return;
     }
@@ -808,51 +875,36 @@ void CompassCalibrator::run_ellipsoid_fit()
     param_t fit1_params, fit2_params;
     fit1_params = fit2_params = _params;
 
-    float JTJ[COMPASS_CAL_NUM_ELLIPSOID_PARAMS*COMPASS_CAL_NUM_ELLIPSOID_PARAMS] = { };
-    float JTJ2[COMPASS_CAL_NUM_ELLIPSOID_PARAMS*COMPASS_CAL_NUM_ELLIPSOID_PARAMS] = { };
-    float JTFI[COMPASS_CAL_NUM_ELLIPSOID_PARAMS] = { };
+    NormalMatrix JTJ{};
+    NormalVector JTFI{};
 
     // Gauss Newton Part common for all kind of extensions including LM
     for (uint16_t k = 0; k<_samples_collected; k++) {
         Vector3f sample = _sample_buffer[k].get();
 
-        float ellipsoid_jacob[COMPASS_CAL_NUM_ELLIPSOID_PARAMS];
+        const Jacobian J = Fit::jacobian(*this, sample, fit1_params);
+        const Milligauss residual = calc_residual(sample, fit1_params) * milligauss;
 
-        calc_ellipsoid_jacob(sample, fit1_params, ellipsoid_jacob);
-
-        for (uint8_t i = 0;i < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; i++) {
-            // compute JTJ
-            for (uint8_t j = 0; j < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; j++) {
-                JTJ [i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+j] += ellipsoid_jacob[i] * ellipsoid_jacob[j];
-                JTJ2[i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+j] += ellipsoid_jacob[i] * ellipsoid_jacob[j];
-            }
-            // compute JTFI
-            JTFI[i] += ellipsoid_jacob[i] * calc_residual(sample, fit1_params);
-        }
+        accumulate(JTJ, J);
+        accumulate(JTFI, J, residual);
     }
 
     //------------------------Levenberg-Marquardt-part-starts-here---------------------------------//
-    //refer: http://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm#Choice_of_damping_parameter
-    for (uint8_t i = 0; i < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; i++) {
-        JTJ[i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+i] += _ellipsoid_lambda;
-        JTJ2[i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+i] += _ellipsoid_lambda/lma_damping;
-    }
-
-    if (!mat_inverse(JTJ, JTJ, 9)) {
-        return;
-    }
-
-    if (!mat_inverse(JTJ2, JTJ2, 9)) {
+    // refer: http://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm#Choice_of_damping_parameter
+    // JTJ is damped in place, by lambda/lma_damping then by lambda, rather
+    // than copied: the calibration thread has a small stack
+    damp(JTJ, lambda/lma_damping);
+    const Params delta2 = solve<Params>(JTJ, JTFI);
+    damp(JTJ, lambda - lambda/lma_damping);
+    const Params delta1 = solve<Params>(JTJ, JTFI);
+    if (!is_finite(delta1) || !is_finite(delta2)) {
         return;
     }
 
     // extract radius, offset, diagonals and offdiagonal parameters
-    for (uint8_t row=0; row < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; row++) {
-        for (uint8_t col=0; col < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; col++) {
-            fit1_params.get_ellipsoid_params()[row] -= JTFI[col] * JTJ[row*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+col];
-            fit2_params.get_ellipsoid_params()[row] -= JTFI[col] * JTJ2[row*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+col];
-        }
-    }
+    const Params params = Fit::params(_params);
+    Fit::set(fit1_params, params - delta1);
+    Fit::set(fit2_params, params - delta2);
 
     // calculate fitness of two possible sets of parameters
     fit1 = calc_mean_squared_residuals(fit1_params);
@@ -861,23 +913,33 @@ void CompassCalibrator::run_ellipsoid_fit()
     // decide which of the two sets of parameters is best and store in fit1_params
     if (fit1 > _fitness && fit2 > _fitness) {
         // if neither set of parameters provided better results, increase lambda
-        _ellipsoid_lambda *= lma_damping;
+        lambda *= lma_damping;
     } else if (fit2 < _fitness && fit2 < fit1) {
         // if fit2 was better we will use it. decrease lambda
-        _ellipsoid_lambda /= lma_damping;
+        lambda /= lma_damping;
         fit1_params = fit2_params;
         fitness = fit2;
     } else if (fit1 < _fitness) {
         fitness = fit1;
     }
-    //--------------------Levenberg-part-ends-here--------------------------------//
+    //--------------------Levenberg-Marquardt-part-ends-here--------------------------------//
 
     // store new parameters and update fitness
-    if (fitness < _fitness) {
+    if (!isnan(fitness) && fitness < _fitness) {
         _fitness = fitness;
         _params = fit1_params;
         update_completion_mask();
     }
+}
+
+void CompassCalibrator::run_sphere_fit()
+{
+    run_fit<SphereFit>(_sphere_lambda);
+}
+
+void CompassCalibrator::run_ellipsoid_fit()
+{
+    run_fit<EllipsoidFit>(_ellipsoid_lambda);
 }
 
 

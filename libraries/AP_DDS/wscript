@@ -43,6 +43,12 @@ def configure(cfg):
     for inc in extra_src_inc:
         cfg.env.INCLUDES += [str(cfg.srcnode.make_node(inc))]
 
+    # newlib declares clock_gettime(), which AP_DDS_Client.cpp provides on
+    # ChibiOS, only with _POSIX_TIMERS; GCC 14 and later reject the implicit
+    # declaration in Micro-XRCE-DDS-Client
+    if cfg.env.BOARD_CLASS == 'ChibiOS':
+        cfg.env.CFLAGS += ['-D_POSIX_TIMERS=1']
+
     # auto update submodules
     cfg.env.append_value('GIT_SUBMODULES', 'Micro-XRCE-DDS-Client')
     cfg.env.append_value('GIT_SUBMODULES', 'Micro-CDR')

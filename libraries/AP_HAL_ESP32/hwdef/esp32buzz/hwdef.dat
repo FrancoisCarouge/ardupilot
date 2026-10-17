@@ -1,9 +1,9 @@
 define HAL_ESP32_BOARD_NAME "esp32-buzz"
 
 # SPI Buses; https://docs.espressif.com/projects/esp-idf/en/v5.3.4/esp32/api-reference/peripherals/spi_master.html
-# tip:  VSPI_HOST  is an alternative name for esp's SPI3
+# tip:  SPI3_HOST  was named VSPI_HOST before esp-idf v6.0
 #            Host      DMA Channel     MOSI        MISO        SCLK
-ESP32_SPIBUS VSPI_HOST 1               GPIO_NUM_23 GPIO_NUM_19 GPIO_NUM_18
+ESP32_SPIBUS SPI3_HOST 1               GPIO_NUM_23 GPIO_NUM_19 GPIO_NUM_18
 
 # SPI Devices
 #            Name                Bus   Device  ChipSel      Mode LoSpeed HiSpeed
@@ -92,7 +92,7 @@ define AP_FILESYSTEM_ESP32_ENABLED 1
 #  as mmc uses specific pins but is quicker,
 define HAL_ESP32_SDMMC 1
 # and spi is more flexible pinouts....  dont forget vspi/hspi should be selected to NOT conflict with SPI_BUSES above
-# define HAL_ESP32_SDSPI {.host=VSPI_HOST, .dma_ch=2, .mosi=GPIO_NUM_2, .miso=GPIO_NUM_15, .sclk=GPIO_NUM_14, .cs=GPIO_NUM_21}
+# define HAL_ESP32_SDSPI {.host=SPI3_HOST, .dma_ch=2, .mosi=GPIO_NUM_2, .miso=GPIO_NUM_15, .sclk=GPIO_NUM_14, .cs=GPIO_NUM_21}
 
 define HAL_ESP32_SDCARD 1
 define LOGGER_MAVLINK_SUPPORT 1

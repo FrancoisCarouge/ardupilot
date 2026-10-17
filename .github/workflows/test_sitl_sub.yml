@@ -201,6 +201,7 @@ jobs:
       - name: Register autotest fail matcher
         run: echo "::add-matcher::.github/problem-matchers/autotestfail.json"
 
+      - uses: ./.github/actions/setup-cxx26
       - uses: ./.github/actions/setup-ccache
         with:
           key-suffix: base

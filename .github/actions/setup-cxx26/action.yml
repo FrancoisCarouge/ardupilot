@@ -1,0 +1,162 @@
+name: setup-cxx26
+description: >
+  Install C++26-capable compilers inside the ardupilot-dev Ubuntu 24.04
+  containers: g++-14 (picked by waf when the default g++ is older), and
+  optionally clang-20, Arm GNU Toolchain 15.2 for ChibiOS, and GCC 14 cross
+  compilers for Linux boards.
+
+inputs:
+  arm:
+    description: >
+      Install Arm GNU Toolchain 15.2 as /opt/gcc-arm-none-eabi-15 and add it
+      to PATH.
+    required: false
+    default: 'false'
+  clang:
+    description: Install clang-20 and point clang/clang++ at it.
+    required: false
+    default: 'false'
+  multilib:
+    description: Install g++-14-multilib for 32-bit native builds.
+    required: false
+    default: 'false'
+  musl:
+    description: >
+      Install the Bootlin armv7-eabihf musl toolchain (GCC 15) as
+      /opt/arm-linux-musleabihf-15 with arm-linux-musleabihf-* names, and add
+      it to PATH.
+    required: false
+    default: 'false'
+  cross:
+    description: >
+      Space-separated GCC cross toolchain prefixes to install at version 14,
+      e.g. "arm-linux-gnueabihf aarch64-linux-gnu".
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: install compilers
+      shell: bash
+      env:
+        SETUP_CLANG: ${{ inputs.clang }}
+        SETUP_MULTILIB: ${{ inputs.multilib }}
+        SETUP_CROSS: ${{ inputs.cross }}
+      run: |
+        SUDO=""
+        if [ "$(id -u)" -ne 0 ]; then
+            SUDO="sudo"
+        fi
+        PKGS="gcc-14 g++-14"
+        if [ "$SETUP_CLANG" = "true" ]; then
+            PKGS="$PKGS clang-20 llvm-20"
+        fi
+        if [ "$SETUP_MULTILIB" = "true" ]; then
+            PKGS="$PKGS g++-14-multilib"
+        fi
+        for prefix in $SETUP_CROSS; do
+            PKGS="$PKGS gcc-14-$prefix g++-14-$prefix"
+        done
+        # installing compilers runs update-ccache-symlinks, which removes the
+        # images' own ccache links such as arm-none-eabi-g++: save them
+        CCACHE_LINKS=""
+        if [ -d /usr/lib/ccache ]; then
+            CCACHE_LINKS=$(ls /usr/lib/ccache)
+        fi
+        $SUDO apt-get update -qq
+        # releases without gcc-14 (Ubuntu 22.04, as in the ROS images) get it
+        # from the toolchain PPA, as does clang, which cannot use the
+        # std::forward_like of Ubuntu 24.04's libstdc++ 14.2 (fixed in 14.3)
+        if ! apt-cache show gcc-14 > /dev/null 2>&1 || [ "$SETUP_CLANG" = "true" ]; then
+            $SUDO apt-get install -y --no-install-recommends software-properties-common gpg-agent
+            $SUDO add-apt-repository -y ppa:ubuntu-toolchain-r/test
+            $SUDO apt-get update -qq
+        fi
+        $SUDO apt-get install -y --no-install-recommends $PKGS
+        if [ "$SETUP_CLANG" = "true" ]; then
+            $SUDO apt-get install -y --no-install-recommends libstdc++-14-dev
+        fi
+        if [ "$SETUP_CLANG" = "true" ]; then
+            $SUDO ln -sf /usr/bin/clang-20 /usr/bin/clang
+            $SUDO ln -sf /usr/bin/clang++-20 /usr/bin/clang++
+        fi
+        # restore the saved ccache links and add ones for the new compilers
+        if [ -d /usr/lib/ccache ]; then
+            for compiler in $CCACHE_LINKS; do
+                $SUDO ln -sf ../../bin/ccache "/usr/lib/ccache/$compiler"
+            done
+            for compiler in gcc-14 g++-14 clang-20 clang++-20; do
+                if [ -x "/usr/bin/$compiler" ]; then
+                    $SUDO ln -sf ../../bin/ccache "/usr/lib/ccache/$compiler"
+                fi
+            done
+            for prefix in $SETUP_CROSS; do
+                for compiler in gcc-14 g++-14; do
+                    $SUDO ln -sf ../../bin/ccache "/usr/lib/ccache/$prefix-$compiler"
+                done
+            done
+        fi
+
+    - name: restore Arm GNU Toolchain
+      if: inputs.arm == 'true'
+      id: arm-cache
+      uses: actions/cache@v5
+      with:
+        path: /opt/gcc-arm-none-eabi-15
+        key: arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi
+
+    - name: install Arm GNU Toolchain
+      if: inputs.arm == 'true' && steps.arm-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        SUDO=""
+        if [ "$(id -u)" -ne 0 ]; then
+            SUDO="sudo"
+        fi
+        ARM_ROOT="arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi"
+        wget -q "https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/$ARM_ROOT.tar.xz"
+        $SUDO tar xJf "$ARM_ROOT.tar.xz" -C /opt
+        $SUDO mv "/opt/$ARM_ROOT" /opt/gcc-arm-none-eabi-15
+        $SUDO rm -rf /opt/gcc-arm-none-eabi-15/share/doc
+        rm "$ARM_ROOT.tar.xz"
+
+    - name: add Arm GNU Toolchain to PATH
+      if: inputs.arm == 'true'
+      shell: bash
+      run: echo "/opt/gcc-arm-none-eabi-15/bin" >> "$GITHUB_PATH"
+
+    - name: restore musl toolchain
+      if: inputs.musl == 'true'
+      id: musl-cache
+      uses: actions/cache@v5
+      with:
+        path: /opt/arm-linux-musleabihf-15
+        key: bootlin-armv7-eabihf--musl--stable-2026.08-1
+
+    - name: install musl toolchain
+      if: inputs.musl == 'true' && steps.musl-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        SUDO=""
+        if [ "$(id -u)" -ne 0 ]; then
+            SUDO="sudo"
+        fi
+        MUSL_ROOT="armv7-eabihf--musl--stable-2026.08-1"
+        MUSL_SHA256="9147bafae4aa272321a3c6440d04d83b7e23411b2d344f875541d84c4444ba9b"
+        wget -q "https://toolchains.bootlin.com/downloads/releases/toolchains/armv7-eabihf/tarballs/$MUSL_ROOT.tar.xz"
+        echo "$MUSL_SHA256  $MUSL_ROOT.tar.xz" | sha256sum -c -
+        $SUDO tar xJf "$MUSL_ROOT.tar.xz" -C /opt
+        $SUDO mv "/opt/$MUSL_ROOT" /opt/arm-linux-musleabihf-15
+        rm "$MUSL_ROOT.tar.xz"
+        # the Buildroot wrappers run <name>.br_real from their own directory,
+        # so the waf toolchain names must live next to them
+        cd /opt/arm-linux-musleabihf-15/bin || exit 1
+        for f in arm-buildroot-linux-musleabihf-*; do
+            $SUDO ln -sf "$f" "${f/arm-buildroot-linux-musleabihf/arm-linux-musleabihf}"
+        done
+
+    - name: add musl toolchain to PATH
+      if: inputs.musl == 'true'
+      shell: bash
+      run: echo "/opt/arm-linux-musleabihf-15/bin" >> "$GITHUB_PATH"

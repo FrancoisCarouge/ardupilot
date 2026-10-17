@@ -109,18 +109,6 @@ float safe_asin(const T v);
 template <typename T>
 float safe_sqrt(const T v);
 
-// matrix multiplication of two NxN matrices
-template <typename T>
-void mat_mul(const T *A, const T *B, T *C, uint16_t n);
-
-// matrix inverse
-template <typename T>
-bool mat_inverse(const T *x, T *y, uint16_t dim) WARN_IF_UNUSED;
-
-// matrix identity
-template <typename T>
-void mat_identity(T *x, uint16_t dim);
-
 /*
  * Constrain an angle to be within the range: -180 to 180 degrees. The second
  * parameter changes the units. Default: 1 == degrees, 10 == dezi,
