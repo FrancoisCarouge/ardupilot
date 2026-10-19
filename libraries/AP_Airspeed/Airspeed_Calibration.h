@@ -76,14 +76,12 @@ public:
 
 private:
     // the typed Kalman filter, defined in Airspeed_Calibration.cpp to keep its
-    // expensive headers out of this one, and constructed in this storage on
-    // first use, not with this object: no heap, and not during static
-    // initialization, whose order the filter's default values depend on
+    // expensive headers out of this one, and constructed in this storage with
+    // this object, without the heap
     struct Filter;
     static constexpr size_t filter_size = 184;
     alignas(8) uint8_t _storage[filter_size];
-    Filter *_filter = nullptr;
-    Filter &filter();
+    Filter *_filter;
 };
 
 #endif // AP_AIRSPEED_AUTOCAL_ENABLE

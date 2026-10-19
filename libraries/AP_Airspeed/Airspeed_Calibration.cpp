@@ -113,24 +113,12 @@ Airspeed_Calibration::Airspeed_Calibration()
 {
     static_assert(sizeof(Filter) <= filter_size, "Airspeed_Calibration::filter_size is too small for the filter");
     static_assert(alignof(Filter) <= 8, "Airspeed_Calibration::_storage is under-aligned for the filter");
+    _filter = new (_storage) Filter;
 }
 
 Airspeed_Calibration::~Airspeed_Calibration()
 {
-    if (_filter != nullptr) {
-        _filter->~Filter();
-    }
-}
-
-// the Kalman library's identity and zero values are dynamically initialized
-// variables: a filter constructed during static initialization, as a member
-// of a global object, may copy them before they are set
-Airspeed_Calibration::Filter &Airspeed_Calibration::filter()
-{
-    if (_filter == nullptr) {
-        _filter = new (_storage) Filter;
-    }
-    return *_filter;
+    _filter->~Filter();
 }
 
 Airspeed_Calibration::Scale Airspeed_Calibration::scale_of(Ratio ratio)
@@ -153,27 +141,19 @@ void Airspeed_Calibration::init(Ratio initial_ratio)
 
 void Airspeed_Calibration::set_scale(Scale scale)
 {
-    auto &kalman = filter().kalman;
+    auto &kalman = _filter->kalman;
     const State x{kalman.x()};
     kalman.x(State{x.at<0>(), x.at<1>(), scale});
 }
 
 Airspeed_Calibration::Estimate Airspeed_Calibration::get_state() const
 {
-    if (_filter == nullptr) {
-        return Estimate{0.0f * metre_per_second, 0.0f * metre_per_second, 0.0f * Scale::reference};
-    }
     const State x{_filter->kalman.x()};
     return Estimate{x.at<0>(), x.at<1>(), x.at<2>()};
 }
 
 Airspeed_Calibration::EstimateVariances Airspeed_Calibration::get_variances() const
 {
-    if (_filter == nullptr) {
-        return EstimateVariances{100.0f * (metre_per_second * metre_per_second),
-                                 100.0f * (metre_per_second * metre_per_second),
-                                 0.000001f * ScaleVariance::reference};
-    }
     const Covariance p{_filter->kalman.p()};
     return EstimateVariances{p.at<0, 0>(), p.at<1, 1>(), p.at<2, 2>()};
 }
@@ -186,7 +166,7 @@ Airspeed_Calibration::Scale Airspeed_Calibration::update(RootPressure root_press
                                                          MetresPerSecond vg_east, MetresPerSecond vg_down,
                                                          MetresPerSecond max_wind)
 {
-    auto &kalman = filter().kalman;
+    auto &kalman = _filter->kalman;
 
     // Perform the covariance prediction, P = P + Q. No state prediction
     // required because states are assumed to be time invariant plus
