@@ -70,26 +70,18 @@ PosVelEKF::PosVelEKF()
 {
     static_assert(sizeof(Filter) <= filter_size, "PosVelEKF::filter_size is too small for the filter");
     static_assert(alignof(Filter) <= 8, "PosVelEKF::_storage is under-aligned for the filter");
+    _filter = new (_storage) Filter;
 }
 
 PosVelEKF::~PosVelEKF()
 {
-    if (_filter != nullptr) {
-        _filter->~Filter();
-    }
+    _filter->~Filter();
 }
 
 // Initialize the covariance and state matrix
 // This is called when the landing target is located for the first time or it was lost, then relocated
 void PosVelEKF::init(Metres pos, SquareMetres posVar, MetresPerSecond vel, SquareMetresPerSecondSquared velVar)
 {
-    // the Kalman library's identity and zero values are dynamically
-    // initialized variables: a filter constructed during static
-    // initialization, as a member of a global object, may copy them before
-    // they are set, leaving for example a zero output model
-    if (_filter == nullptr) {
-        _filter = new (_storage) Filter;
-    }
     auto &kalman = _filter->kalman;
     kalman.x(State{pos, vel});
     Covariance p{};
@@ -102,9 +94,6 @@ void PosVelEKF::init(Metres pos, SquareMetres posVar, MetresPerSecond vel, Squar
 // This is called at 400 hz
 void PosVelEKF::predict(Seconds dt, MetresPerSecond dVel, MetresPerSecond dVelNoise)
 {
-    if (_filter == nullptr) {
-        return;
-    }
     _filter->kalman.predict(dt, dVelNoise, Input{dVel});
 }
 
@@ -112,9 +101,6 @@ void PosVelEKF::predict(Seconds dt, MetresPerSecond dVel, MetresPerSecond dVelNo
 // This is called whenever we have a new measurement available
 void PosVelEKF::fusePos(Metres pos, SquareMetres posVar)
 {
-    if (_filter == nullptr) {
-        return;
-    }
     auto &kalman = _filter->kalman;
     kalman.r(OutputVariance{posVar});
     kalman.update(Output{pos});
@@ -122,17 +108,11 @@ void PosVelEKF::fusePos(Metres pos, SquareMetres posVar)
 
 PosVelEKF::Metres PosVelEKF::getPos() const
 {
-    if (_filter == nullptr) {
-        return 0.0f * metre;
-    }
     return _filter->kalman.x().at<0>();
 }
 
 PosVelEKF::MetresPerSecond PosVelEKF::getVel() const
 {
-    if (_filter == nullptr) {
-        return 0.0f * metre_per_second;
-    }
     return _filter->kalman.x().at<1>();
 }
 
@@ -140,9 +120,6 @@ PosVelEKF::MetresPerSecond PosVelEKF::getVel() const
 PosVelEKF::Unitless PosVelEKF::getPosNIS(Metres pos, SquareMetres posVar)
 {
     // NIS = innovation_residual.Transpose * Innovation_Covariance.Inverse * innovation_residual
-    if (_filter == nullptr) {
-        return 0.0f * mp_units::one;
-    }
     const auto &kalman = _filter->kalman;
     const Metres innovation_residual = pos - kalman.x().at<0>();
     const SquareMetres innovation_covariance = kalman.p().at<0, 0>() + posVar;
