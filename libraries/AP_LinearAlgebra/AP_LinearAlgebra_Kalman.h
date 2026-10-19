@@ -29,41 +29,27 @@
 #include "AP_LinearAlgebra.h"
 #include "AP_LinearAlgebra_Units.h"
 
+// Kalman's integrations: typed matrices evaluate, transpose, and have identity
+// and zero values through their backend matrix; a 1x1 typed product collapses
+// to its element, an mp-units quantity, whose identity and zero they define
+#include "AP_LinearAlgebra_MathsMacrosPush.h"
+#include <typed/fcarouge/kalman_typed_linear_algebra.hpp>
+#include <mp_units/fcarouge/kalman_mp_units.hpp>
+#include "AP_LinearAlgebra_MathsMacrosPop.h"
+
 namespace fcarouge::kalman_filter::internal {
 
-// typed matrices evaluate, transpose, and have identity and zero values
-// through their backend matrix
+// The backend's identity and zero are constant expressions, so Kalman's
+// make_one() and make_zero() return the constant one<> and zero<> of a typed
+// matrix, which Kalman defines only for types with a static Identity() or
+// Zero() (Kalman todo branch BUG.md defect 11): define them from the factories.
 template <typename Matrix, typename RowIndexes, typename ColumnIndexes>
-struct evaluates<typed_matrix<Matrix, RowIndexes, ColumnIndexes>> {
-    [[nodiscard]] static constexpr auto operator()()
-    -> typed_matrix<evaluate<Matrix>, RowIndexes, ColumnIndexes>;
-};
-
-template <typename Matrix, typename RowIndexes, typename ColumnIndexes>
-struct transposes<typed_matrix<Matrix, RowIndexes, ColumnIndexes>> {
-    [[nodiscard]] static constexpr auto
-    operator()(const typed_matrix<Matrix, RowIndexes, ColumnIndexes> &value)
-    {
-        return typed_matrix<evaluate<transpose<Matrix>>, ColumnIndexes, RowIndexes>{value.data().transpose()};
-    }
-};
+inline constexpr auto one<typed_matrix<Matrix, RowIndexes, ColumnIndexes>> {
+    ones<typed_matrix<Matrix, RowIndexes, ColumnIndexes>>{}()};
 
 template <typename Matrix, typename RowIndexes, typename ColumnIndexes>
-inline typed_matrix<decltype(one<Matrix>), RowIndexes, ColumnIndexes>
-one<typed_matrix<Matrix, RowIndexes, ColumnIndexes>> {one<Matrix>};
-
-template <typename Matrix, typename RowIndexes, typename ColumnIndexes>
-inline typed_matrix<decltype(zero<Matrix>), RowIndexes, ColumnIndexes>
-zero<typed_matrix<Matrix, RowIndexes, ColumnIndexes>> {zero<Matrix>};
-
-// a 1x1 typed product collapses to its element, an mp-units quantity
-template <auto Reference, typename Representation>
-inline mp_units::quantity<Reference, Representation>
-one<mp_units::quantity<Reference, Representation>> {Representation{1} * Reference};
-
-template <auto Reference, typename Representation>
-inline mp_units::quantity<Reference, Representation>
-zero<mp_units::quantity<Reference, Representation>> {Representation{0} * Reference};
+inline constexpr auto zero<typed_matrix<Matrix, RowIndexes, ColumnIndexes>> {
+    zeros<typed_matrix<Matrix, RowIndexes, ColumnIndexes>>{}()};
 
 } // namespace fcarouge::kalman_filter::internal
 
