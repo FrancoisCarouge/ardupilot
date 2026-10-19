@@ -19,6 +19,10 @@ def configure(cfg):
         modules + 'TypedLinearAlgebra/include',
         # mp-units integration, shipped as an example plug-in
         modules + 'TypedLinearAlgebra/support/mp_units',
+        # Kalman's integrations with TypedLinearAlgebra and mp-units, included
+        # by their path below this directory: its mp_units directory also holds
+        # a fcarouge/mp_units.hpp, which would shadow TypedLinearAlgebra's
+        modules + 'Kalman/support',
     ])
 
     # mp-units headers are third-party system headers: ArduPilot's warning
