@@ -1222,6 +1222,20 @@ source files, at the first line of each function.
 - Kalman: `todo` and the three sample branches rebased on `master`; the samples build and pass under the
   new warning flags with clang 21 and g++ 14. TypedLinearAlgebra: `master` merged into `todo`.
 
+### Refresh 2026-10-18: rebase, Kalman's static initialization fix
+
+- Rebased on `master` (75 upstream commits) without conflict. Kalman `d80652ace` (#1026, F21 fixed; narrowing
+  vector elements rejected; facades converged), TypedLinearAlgebra `a62bbca6e`.
+- `AP_LinearAlgebra_Kalman.h` now includes Kalman's `kalman_typed_linear_algebra.hpp` and `kalman_mp_units.hpp`
+  instead of its own specializations (F41), plus a workaround for the new Kalman defect F42.
+- The precision landing and airspeed calibration filters are constructed with their objects again, their
+  checks for an absent filter removed: the static storage unit tests and `Copter.PrecisionLanding` and
+  `Plane.AIRSPEED_AUTOCAL` pass (same ratio resets). The named values take no RAM on MatekF405 (360 bytes
+  before).
+- Full check: SITL copter, plane and tests, 78 of 81 unit tests (the three death tests), the 11 EKF and
+  filter autotests, CubeOrange copter and MatekF405 plane.
+- Kalman: defects 9 and 10 resolved, defect 11 recorded; branches rebased, samples pass on the new facades.
+
 ### Next (as of 2026-10-16)
 
 Done: every EKF3 fusion, the terrain offset estimator, the gimbal EKF fusions (with its covariance fix)
@@ -1237,9 +1251,8 @@ Kalman samples (F40).
 3. Maintainer items, not proposed yet: the doubled beacon offset in `FuseRngBcn` (up to 3.2% on the
    gains), the terrain estimator's stale X axis flow innovation.
 4. A fourth sample, an EKF3 subset (scalar fusions with masked gains), if the owner wants one of that size.
-5. When Kalman #1026 merges (F21 fix): move `AP_LinearAlgebra_Kalman.h`'s `one`/`zero` specializations to the
-   `ones`/`zeros` factories, and drop the construct-on-first-use storage of the precision landing, airspeed
-   and AGL filters; if the named values move to TypedLinearAlgebra (F41), take them from there.
+5. Done 2026-10-18 for #1026; remove the F42 workaround when Kalman fixes defect 11; if the named values move
+   to TypedLinearAlgebra (F41), take them from there.
 6. Keep the three projects rebased, the findings rechecked and mirrored, the PR list validated.
 
 ## Appendix: stack probe
