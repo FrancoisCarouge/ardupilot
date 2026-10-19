@@ -47,11 +47,10 @@ public:
 
 private:
     // the typed Kalman filter, defined in PosVelEKF.cpp to keep its expensive
-    // headers out of this one, and constructed in this storage on the first
-    // init(), not with this object: no heap, and not during static
-    // initialization, whose order the filter's default values depend on
+    // headers out of this one, and constructed in this storage with this
+    // object, without the heap
     struct Filter;
     static constexpr size_t filter_size = 120;
     alignas(8) uint8_t _storage[filter_size];
-    Filter *_filter = nullptr;
+    Filter *_filter;
 };
