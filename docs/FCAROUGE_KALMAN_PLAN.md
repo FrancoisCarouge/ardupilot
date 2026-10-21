@@ -1250,7 +1250,8 @@ source files, at the first line of each function.
   `const` rather than `constexpr` local): reported to the owner, not changed.
 - WebAssembly passes again on `7ef98218f5` (mp-units `ef8653eab`). With Emscripten 6.0.8 now installed
   locally, the regression bisects to mp-units `96e890993`; mp-units `master` crashes Emscripten's clang
-  24.0.0git, while clang 21 and 22 accept all of them: a report for mp-units or LLVM, owner to decide.
+  24.0.0git, while clang 21 and 22 accept all of them. Owner decision (2026-10-21): not reported for now.
+  The CI WebAssembly job now runs locally too (build and smoke test), part of the post-bump checks.
 - Kalman `6f3031910` fixes defect 11 (F42): bumped to `a241cc447`, the workaround in
   `AP_LinearAlgebra_Kalman.h` removed; full check and both firmware targets pass.
 
