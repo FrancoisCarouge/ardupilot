@@ -1236,6 +1236,19 @@ source files, at the first line of each function.
   filter autotests, CubeOrange copter and MatekF405 plane.
 - Kalman: defects 9 and 10 resolved, defect 11 recorded; branches rebased, samples pass on the new facades.
 
+### 2026-10-20: CI regressions fixed
+
+- WebAssembly: failing on `fcarouge` since the mp-units bump to `c85584d65` (2026-10-16), Emscripten 6.0.8
+  rejecting its reworked representation constraints (F13). mp-units pinned back to `ef8653eab`, the last
+  version that builds there; SITL, unit tests, the 11 autotests and both firmware targets pass on it.
+- ASan unit tests: PR candidate 4's `test_accel_calibrator` leaked the calibrator's sample buffer; the test
+  now clears the calibrator (folded into that commit). All 81 unit tests pass under ASan.
+- Kalman: sample PRs #1019 to #1021 opened by the owner; #1021 (terrain) failed CI's newer clang-tidy
+  (`llvm-prefer-static-over-anonymous-namespace`), fixed by a commit on top. #1020 (gimbal), amended by
+  the owner with a units version, fails g++ (`-Wsign-conversion` on `at<Index / 3, ...>` with a signed
+  `Eigen::Index` sequence) and MSVC (C7595: the consteval `quantity_spec::operator[]` given `per_rad`, a
+  `const` rather than `constexpr` local): reported to the owner, not changed.
+
 ### Next (as of 2026-10-16)
 
 Done: every EKF3 fusion, the terrain offset estimator, the gimbal EKF fusions (with its covariance fix)
