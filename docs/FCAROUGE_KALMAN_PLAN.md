@@ -1248,6 +1248,9 @@ source files, at the first line of each function.
   the owner with a units version, fails g++ (`-Wsign-conversion` on `at<Index / 3, ...>` with a signed
   `Eigen::Index` sequence) and MSVC (C7595: the consteval `quantity_spec::operator[]` given `per_rad`, a
   `const` rather than `constexpr` local): reported to the owner, not changed.
+- WebAssembly passes again on `7ef98218f5` (mp-units `ef8653eab`). With Emscripten 6.0.8 now installed
+  locally, the regression bisects to mp-units `96e890993`; mp-units `master` crashes Emscripten's clang
+  24.0.0git, while clang 21 and 22 accept all of them: a report for mp-units or LLVM, owner to decide.
 - Kalman `6f3031910` fixes defect 11 (F42): bumped to `a241cc447`, the workaround in
   `AP_LinearAlgebra_Kalman.h` removed; full check and both firmware targets pass.
 
