@@ -37,22 +37,6 @@
 #include <mp_units/fcarouge/kalman_mp_units.hpp>
 #include "AP_LinearAlgebra_MathsMacrosPop.h"
 
-namespace fcarouge::kalman_filter::internal {
-
-// The backend's identity and zero are constant expressions, so Kalman's
-// make_one() and make_zero() return the constant one<> and zero<> of a typed
-// matrix, which Kalman defines only for types with a static Identity() or
-// Zero() (Kalman todo branch BUG.md defect 11): define them from the factories.
-template <typename Matrix, typename RowIndexes, typename ColumnIndexes>
-inline constexpr auto one<typed_matrix<Matrix, RowIndexes, ColumnIndexes>> {
-    ones<typed_matrix<Matrix, RowIndexes, ColumnIndexes>>{}()};
-
-template <typename Matrix, typename RowIndexes, typename ColumnIndexes>
-inline constexpr auto zero<typed_matrix<Matrix, RowIndexes, ColumnIndexes>> {
-    zeros<typed_matrix<Matrix, RowIndexes, ColumnIndexes>>{}()};
-
-} // namespace fcarouge::kalman_filter::internal
-
 namespace AP_LinearAlgebra {
 
 // the type of a * transpose(b), for example a covariance matrix
