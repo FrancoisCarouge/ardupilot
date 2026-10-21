@@ -53,7 +53,8 @@ on the current `master`, search for an open pull request on the same subject, fo
   and cross-axis errors, for the 6 and 12 orientation fits; plus the tests' `wscript`.
 - Why: the accelerometer calibration has no test; it sets the offsets and scale factors used in flight.
 - Risk: test code only. Evidence: `test_accel_calibrator` passes on `master` (2 tests; offsets within
-  1e-3 m/s/s, scale factors within 1e-4).
+  1e-3 m/s/s, scale factors within 1e-4), and under ASan since 2026-10-20: the test now releases the
+  calibrator's sample buffer, which the ASan unit test job reported as a leak.
 
 ## 5. AP_NavEKF: test the EKFGSF yaw estimator
 
