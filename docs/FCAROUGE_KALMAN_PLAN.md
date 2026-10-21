@@ -1248,6 +1248,8 @@ source files, at the first line of each function.
   the owner with a units version, fails g++ (`-Wsign-conversion` on `at<Index / 3, ...>` with a signed
   `Eigen::Index` sequence) and MSVC (C7595: the consteval `quantity_spec::operator[]` given `per_rad`, a
   `const` rather than `constexpr` local): reported to the owner, not changed.
+- Kalman `6f3031910` fixes defect 11 (F42): bumped to `a241cc447`, the workaround in
+  `AP_LinearAlgebra_Kalman.h` removed; full check and both firmware targets pass.
 
 ### Next (as of 2026-10-16)
 
@@ -1264,8 +1266,7 @@ Kalman samples (F40).
 3. Maintainer items, not proposed yet: the doubled beacon offset in `FuseRngBcn` (up to 3.2% on the
    gains), the terrain estimator's stale X axis flow innovation.
 4. A fourth sample, an EKF3 subset (scalar fusions with masked gains), if the owner wants one of that size.
-5. Done 2026-10-18 for #1026; remove the F42 workaround when Kalman fixes defect 11; if the named values move
-   to TypedLinearAlgebra (F41), take them from there.
+5. If the named values move to TypedLinearAlgebra (its `todo` `TODO.md`), take them from there.
 6. Keep the three projects rebased, the findings rechecked and mirrored, the PR list validated.
 
 ## Appendix: stack probe
