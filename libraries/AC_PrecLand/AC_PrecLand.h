@@ -7,7 +7,6 @@
 #include <GCS_MAVLink/GCS_MAVLink.h>
 #include <AP_Math/AP_Math.h>
 #include <stdint.h>
-#include "PosVelEKF.h"
 #include <AP_HAL/utility/RingBuffer.h>
 #include <AC_PrecLand/AC_PrecLand_StateMachine.h>
 
@@ -221,7 +220,9 @@ private:
     uint32_t                    _last_backend_los_meas_ms;  // system time target was last seen
     uint32_t                    _last_valid_target_ms;      // last time PrecLand library had a output of the landing target position
 
-    PosVelEKF                   _ekf_x, _ekf_y;             // Kalman Filter for x and y axis
+    // Kalman Filter for x and y axis, allocated by init(): their header, with the units of their interface,
+    // stays out of the vehicle's
+    class PosVelEKF            *_ekf_x, *_ekf_y;
     uint32_t                    _outlier_reject_count;      // mini-EKF's outlier counter (3 consecutive outliers lead to EKF accepting updates)
 
     Vector3f                    _target_pos_rel_meas_ned_m; // target's relative position as 3D vector

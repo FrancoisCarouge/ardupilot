@@ -1329,10 +1329,19 @@ private:
     // ---- 2-state AGL Kalman Filter ----
     // Uses bias-corrected IMU delta-velocity for prediction and downward rangefinder
     // as measurement, decoupled from the main filter's vertical position state.
-    // State: x = [aglKfH (m, +up), aglKfV (m/s, +up)]
-    ftype aglKfH;                   // AGL height estimate (m, positive up from ground)
-    ftype aglKfV;                   // AGL velocity estimate (m/s, positive = climbing)
-    ftype aglKfP[2][2];             // 2x2 covariance matrix (upper triangle, symmetric)
+    // State: x = [AGL height (m, +up), AGL velocity (m/s, +up)], a Kalman library filter defined in
+    // AP_NavEKF3_OptFlowFusion.cpp to keep its expensive headers out of this one, in fixed storage
+    struct AglKf;
+    static constexpr size_t aglKfSize = 40 * sizeof(ftype);
+    alignas(8) uint8_t aglKfStorage[aglKfSize];
+    AglKf *aglKf;
+    // reset the AGL filter to its initial state
+    void resetAglKf();
+    // AGL height (m) and velocity (m/s) estimates, and their variances
+    ftype aglKfHeight() const;
+    ftype aglKfVelocity() const;
+    ftype aglKfHeightVariance() const;
+    ftype aglKfVelocityVariance() const;
     bool  aglKfValid;               // true when RF has been fused within the last 5 s
     uint32_t lastAglRngFuseTime_ms; // timestamp of last successful RF fusion into AGL KF
 #endif

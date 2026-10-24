@@ -25,7 +25,138 @@
 #include <AP_AHRS/AP_AHRS.h>
 #include <GCS_MAVLink/GCS.h>
 
-EKFGSF_yaw::EKFGSF_yaw() {};
+#if HAL_WITH_EKF_DOUBLE && CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+// the update of the Kalman library filter needs a stack frame of 1416 bytes with a double precision EKF
+#pragma GCC diagnostic error "-Wframe-larger-than=1500"
+#endif
+
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Kalman.h>
+
+#include <new>
+
+namespace {
+
+template <auto Reference>
+using Quantity = AP_LinearAlgebra::Units::Quantity<Reference, ftype>;
+
+constexpr auto metre_per_second = mp_units::si::metre / mp_units::si::second;
+constexpr auto radian = mp_units::si::radian;
+constexpr auto one = mp_units::one;
+
+using Velocity = Quantity<metre_per_second>;
+using Angle = Quantity<radian>;
+
+// state: Vel North, Vel East and yaw
+using State = AP_LinearAlgebra::ColumnVector<ftype, Velocity, Velocity, Angle>;
+// output: the NE velocity measurement
+using Output = AP_LinearAlgebra::ColumnVector<ftype, Velocity, Velocity>;
+using Covariance = AP_LinearAlgebra::OuterProduct<State, State>;
+using OutputVariance = AP_LinearAlgebra::OuterProduct<Output, Output>;
+using OutputModel = AP_LinearAlgebra::Quotient<Output, State>;
+using StateTransition = AP_LinearAlgebra::Quotient<State, State>;
+
+// the velocity states are observed directly
+OutputModel velocity_output_model()
+{
+    OutputModel h{};
+    h.at<0, 0>(ftype(1) * one);
+    h.at<1, 1>(ftype(1) * one);
+    return h;
+}
+
+auto make_filter()
+{
+    using namespace fcarouge;
+    return kalman{
+        state{State{}},
+        output<Output>,
+        // set by resetEKFGSF() and the first velocity measurement
+        estimate_uncertainty{Covariance{}},
+        // set by each prediction
+        process_uncertainty{Covariance{}},
+        // set by each correction
+        output_uncertainty{OutputVariance{}},
+        output_model{[](const State &) -> OutputModel {
+            return velocity_output_model();
+        }},
+        // Jacobian of the state prediction: a yaw error rotates the delta velocity
+        state_transition{[](const State &, const Velocity &del_vel_N, const Velocity &del_vel_E) -> StateTransition {
+            StateTransition F{};
+            F.at<0, 0>(ftype(1) * one);
+            F.at<1, 1>(ftype(1) * one);
+            F.at<2, 2>(ftype(1) * one);
+            F.at<0, 2>(-del_vel_E / (ftype(1) * radian));
+            F.at<1, 2>(del_vel_N / (ftype(1) * radian));
+            return F;
+        }},
+        // sum delta velocities in earth frame
+        transition{[](const State &x, const Velocity &del_vel_N, const Velocity &del_vel_E) -> State {
+            return State{x.at<0>() + del_vel_N, x.at<1>() + del_vel_E, x.at<2>()};
+        }},
+        observation{[](const State &x) -> Output {
+            return Output{x.at<0>(), x.at<1>()};
+        }},
+        update_types<>,
+        prediction_types<Velocity, Velocity>};
+}
+
+// Applies the lower limit of the variances and forces symmetry on a covariance matrix
+void constrain(Covariance &P)
+{
+    constexpr auto velocity_variance = metre_per_second * metre_per_second;
+    constexpr auto yaw_variance = radian * radian;
+    const ftype min_var = 1e-6f;
+    P.at<0, 0>(fmaxF((P.at<0, 0>().numerical_value_in(velocity_variance)), min_var) * velocity_variance);
+    P.at<1, 1>(fmaxF((P.at<1, 1>().numerical_value_in(velocity_variance)), min_var) * velocity_variance);
+    P.at<2, 2>(fmaxF((P.at<2, 2>().numerical_value_in(yaw_variance)), min_var) * yaw_variance);
+    const auto P01 = ftype(0.5) * (P.at<0, 1>() + P.at<1, 0>());
+    const auto P02 = ftype(0.5) * (P.at<0, 2>() + P.at<2, 0>());
+    const auto P12 = ftype(0.5) * (P.at<1, 2>() + P.at<2, 1>());
+    P.at<0, 1>(P01);
+    P.at<1, 0>(P01);
+    P.at<0, 2>(P02);
+    P.at<2, 0>(P02);
+    P.at<1, 2>(P12);
+    P.at<2, 1>(P12);
+}
+
+// the filter update, out of its caller for the size of their stack frames
+__attribute__((noinline)) void update(decltype(make_filter()) &kalman, const OutputVariance &R, const Output &z)
+{
+    kalman.r(R);
+    kalman.update(z);
+
+    // apply the variance limits and force symmetry
+    Covariance P{kalman.p()};
+    constrain(P);
+    kalman.p(P);
+}
+
+} // namespace
+
+struct EKFGSF_yaw::Filter {
+    decltype(make_filter()) kalman{make_filter()};
+};
+
+EKFGSF_yaw::EKFGSF_yaw()
+{
+    static_assert(sizeof(Filter) <= filter_size, "EKFGSF_yaw::filter_size is too small for the filter");
+    static_assert(alignof(Filter) <= 8, "EKFGSF_yaw::filter_storage is under-aligned for the filter");
+    static_assert(std::is_trivially_destructible_v<Filter>, "EKFGSF_yaw does not destroy its filters");
+    for (uint8_t mdl_idx = 0; mdl_idx < N_MODELS_EKFGSF; mdl_idx++) {
+        filters[mdl_idx] = new (filter_storage[mdl_idx].storage) Filter;
+    }
+}
+
+ftype EKFGSF_yaw::yawState(const uint8_t mdl_idx) const
+{
+    return filters[mdl_idx]->kalman.x().at<2>().numerical_value_in(radian);
+}
+
+ftype EKFGSF_yaw::yawStateVariance(const uint8_t mdl_idx) const
+{
+    return filters[mdl_idx]->kalman.p().at<2, 2>().numerical_value_in(radian * radian);
+}
 
 void EKFGSF_yaw::update(const Vector3F &delAng,
                         const Vector3F &delVel,
@@ -105,8 +236,8 @@ void EKFGSF_yaw::update(const Vector3F &delAng,
     // equal to the weighting value before it is summed.
     Vector2F yaw_vector;
     for (uint8_t mdl_idx = 0; mdl_idx < N_MODELS_EKFGSF; mdl_idx++) {
-        yaw_vector[0] += GSF.weights[mdl_idx] * cosF(EKF[mdl_idx].X[2]);
-        yaw_vector[1] += GSF.weights[mdl_idx] * sinF(EKF[mdl_idx].X[2]);
+        yaw_vector[0] += GSF.weights[mdl_idx] * cosF(yawState(mdl_idx));
+        yaw_vector[1] += GSF.weights[mdl_idx] * sinF(yawState(mdl_idx));
     }
     GSF.yaw = atan2F(yaw_vector[1],yaw_vector[0]);
 
@@ -128,8 +259,8 @@ void EKFGSF_yaw::update(const Vector3F &delAng,
 
     GSF.yaw_variance = 0.0f;
     for (uint8_t mdl_idx = 0; mdl_idx < N_MODELS_EKFGSF; mdl_idx++) {
-        ftype yawDelta = wrap_PI(EKF[mdl_idx].X[2] - GSF.yaw);
-        GSF.yaw_variance +=  GSF.weights[mdl_idx] * (EKF[mdl_idx].P[2][2] + sq(yawDelta));
+        ftype yawDelta = wrap_PI(yawState(mdl_idx) - GSF.yaw);
+        GSF.yaw_variance +=  GSF.weights[mdl_idx] * (yawStateVariance(mdl_idx) + sq(yawDelta));
     }
 }
 
@@ -145,10 +276,12 @@ void EKFGSF_yaw::fuseVelData(const Vector2F &vel, const ftype velAcc)
             resetEKFGSF();
             for (uint8_t mdl_idx = 0; mdl_idx < N_MODELS_EKFGSF; mdl_idx++) {
                 // Use the firstGPS  measurement to set the velocities and corresponding variances
-                EKF[mdl_idx].X[0] = vel[0];
-                EKF[mdl_idx].X[1] = vel[1];
-                EKF[mdl_idx].P[0][0] = velObsVar;
-                EKF[mdl_idx].P[1][1] = velObsVar;
+                auto &kalman = filters[mdl_idx]->kalman;
+                kalman.x(State{vel[0] * metre_per_second, vel[1] * metre_per_second, kalman.x().at<2>()});
+                Covariance P{kalman.p()};
+                P.at<0, 0>(velObsVar * (metre_per_second * metre_per_second));
+                P.at<1, 1>(velObsVar * (metre_per_second * metre_per_second));
+                kalman.p(P);
             }
             alignYaw();
             vel_fuse_running = true;
@@ -297,7 +430,7 @@ void EKFGSF_yaw::alignYaw()
             AHRS[mdl_idx].R.to_euler(&roll, &pitch, &yaw);
 
             // set the yaw angle
-            yaw = wrap_PI(EKF[mdl_idx].X[2]);
+            yaw = wrap_PI(yawState(mdl_idx));
 
             // update the body to earth frame rotation matrix
             AHRS[mdl_idx].R.from_euler(roll, pitch, yaw);
@@ -305,7 +438,7 @@ void EKFGSF_yaw::alignYaw()
         } else {
             // Calculate the 312 Tait-Bryan rotation sequence that rotates from earth to body frame
             Vector3F euler312 = AHRS[mdl_idx].R.to_euler312();
-            euler312[2] = wrap_PI(EKF[mdl_idx].X[2]); // first rotation (yaw) taken from EKF model state
+            euler312[2] = wrap_PI(yawState(mdl_idx)); // first rotation (yaw) taken from EKF model state
 
             // update the body to earth frame rotation matrix
             AHRS[mdl_idx].R.from_euler312(euler312[0], euler312[1], euler312[2]);
@@ -325,208 +458,107 @@ void EKFGSF_yaw::predict(const uint8_t mdl_idx)
         return;
     }
 
+    auto &kalman = filters[mdl_idx]->kalman;
+
     // Calculate the yaw state using a projection onto the horizontal that avoids gimbal lock
+    ftype yaw;
     if (fabsF(AHRS[mdl_idx].R[2][0]) < fabsF(AHRS[mdl_idx].R[2][1])) {
         // use 321 Tait-Bryan rotation to define yaw state
-        EKF[mdl_idx].X[2] = atan2F(AHRS[mdl_idx].R[1][0], AHRS[mdl_idx].R[0][0]);
+        yaw = atan2F(AHRS[mdl_idx].R[1][0], AHRS[mdl_idx].R[0][0]);
     } else {
         // use 312 Tait-Bryan rotation to define yaw state
-        EKF[mdl_idx].X[2] = atan2F(-AHRS[mdl_idx].R[0][1], AHRS[mdl_idx].R[1][1]); // first rotation (yaw)
+        yaw = atan2F(-AHRS[mdl_idx].R[0][1], AHRS[mdl_idx].R[1][1]); // first rotation (yaw)
     }
+    kalman.x(State{kalman.x().at<0>(), kalman.x().at<1>(), yaw * radian});
 
-    // calculate delta velocity in a horizontal front-right frame
+    // calculate delta velocity in earth frame
     const Vector3F del_vel_NED = AHRS[mdl_idx].R * delta_velocity;
-    const ftype dvx =   del_vel_NED[0] * cosF(EKF[mdl_idx].X[2]) + del_vel_NED[1] * sinF(EKF[mdl_idx].X[2]);
-    const ftype dvy = - del_vel_NED[0] * sinF(EKF[mdl_idx].X[2]) + del_vel_NED[1] * cosF(EKF[mdl_idx].X[2]);
-
-    // sum delta velocities in earth frame:
-    EKF[mdl_idx].X[0] += del_vel_NED[0];
-    EKF[mdl_idx].X[1] += del_vel_NED[1];
-
-    // predict covariance - autocode from https://github.com/priseborough/3_state_filter/blob/flightLogReplay-wip/calcPupdate.txt
-
-    // Local short variable name copies required for readability
-    // Compiler might be smart enough to optimise these out
-    const ftype P00 = EKF[mdl_idx].P[0][0];
-    const ftype P01 = EKF[mdl_idx].P[0][1];
-    const ftype P02 = EKF[mdl_idx].P[0][2];
-    const ftype P10 = EKF[mdl_idx].P[1][0];
-    const ftype P11 = EKF[mdl_idx].P[1][1];
-    const ftype P12 = EKF[mdl_idx].P[1][2];
-    const ftype P20 = EKF[mdl_idx].P[2][0];
-    const ftype P21 = EKF[mdl_idx].P[2][1];
-    const ftype P22 = EKF[mdl_idx].P[2][2];
+    const Velocity del_vel_N = del_vel_NED[0] * metre_per_second;
+    const Velocity del_vel_E = del_vel_NED[1] * metre_per_second;
 
     // Use fixed values for delta velocity and delta angle process noise variances
-    const ftype dvxVar = sq(EKFGSF_accelNoise * velocity_dt); // variance of forward delta velocity - (m/s)^2
-    const ftype dvyVar = dvxVar; // variance of right delta velocity - (m/s)^2
-    const ftype dazVar = sq(EKFGSF_gyroNoise * angle_dt); // variance of yaw delta angle - rad^2
+    constexpr auto velocity_variance = metre_per_second * metre_per_second;
+    const auto dvxVar = sq(EKFGSF_accelNoise * velocity_dt) * velocity_variance; // variance of forward delta velocity - (m/s)^2
+    const auto dvyVar = dvxVar; // variance of right delta velocity - (m/s)^2
+    const auto dazVar = sq(EKFGSF_gyroNoise * angle_dt) * (radian * radian); // variance of yaw delta angle - rad^2
 
-    const ftype t2 = sinF(EKF[mdl_idx].X[2]);
-    const ftype t3 = cosF(EKF[mdl_idx].X[2]);
-    const ftype t4 = dvy*t3;
-    const ftype t5 = dvx*t2;
-    const ftype t6 = t4+t5;
-    const ftype t8 = P22*t6;
-    const ftype t7 = P02-t8;
-    const ftype t9 = dvx*t3;
-    const ftype t11 = dvy*t2;
-    const ftype t10 = t9-t11;
-    const ftype t12 = dvxVar*t2*t3;
-    const ftype t13 = t2*t2;
-    const ftype t14 = t3*t3;
-    const ftype t15 = P22*t10;
-    const ftype t16 = P12+t15;
+    // rotate the delta velocity noise from the horizontal front-right frame to the earth frame
+    const ftype sin_yaw = sinF(yaw);
+    const ftype cos_yaw = cosF(yaw);
+    Covariance Q{};
+    Q.at<0, 0>(dvxVar * sq(cos_yaw) + dvyVar * sq(sin_yaw));
+    Q.at<0, 1>((dvxVar - dvyVar) * (sin_yaw * cos_yaw));
+    Q.at<1, 0>((dvxVar - dvyVar) * (sin_yaw * cos_yaw));
+    Q.at<1, 1>(dvxVar * sq(sin_yaw) + dvyVar * sq(cos_yaw));
+    Q.at<2, 2>(dazVar);
+    kalman.q(Q);
 
-    const ftype min_var = 1e-6f;
-    EKF[mdl_idx].P[0][0] = fmaxF(P00-P20*t6+dvxVar*t14+dvyVar*t13-t6*t7, min_var);
-    EKF[mdl_idx].P[0][1] = P01+t12-P21*t6+t7*t10-dvyVar*t2*t3;
-    EKF[mdl_idx].P[0][2] = t7;
-    EKF[mdl_idx].P[1][0] = P10+t12+P20*t10-t6*t16-dvyVar*t2*t3;
-    EKF[mdl_idx].P[1][1] = fmaxF(P11+P21*t10+dvxVar*t13+dvyVar*t14+t10*t16, min_var);
-    EKF[mdl_idx].P[1][2] = t16;
-    EKF[mdl_idx].P[2][0] = P20-t8;
-    EKF[mdl_idx].P[2][1] = P21+t15;
-    EKF[mdl_idx].P[2][2] = fmaxF(P22+dazVar, min_var);
+    // predict states and covariance
+    kalman.predict(del_vel_N, del_vel_E);
 
-    // force symmetry
-    forceSymmetry(mdl_idx);
+    // apply the variance limits and force symmetry
+    Covariance P{kalman.p()};
+    constrain(P);
+    kalman.p(P);
 }
 
 // Update EKF states and covariance for specified model index using velocity measurement
 // Returns false if the state and covariance correction failed
 bool EKFGSF_yaw::correct(const uint8_t mdl_idx, const Vector2F &vel, const ftype velObsVar)
 {
-    // calculate velocity observation innovations
-    EKF[mdl_idx].innov[0] = EKF[mdl_idx].X[0] - vel[0];
-    EKF[mdl_idx].innov[1] = EKF[mdl_idx].X[1] - vel[1];
+    constexpr auto velocity_variance = metre_per_second * metre_per_second;
+    auto &kalman = filters[mdl_idx]->kalman;
+    const Velocity vel_N = kalman.x().at<0>();
+    const Velocity vel_E = kalman.x().at<1>();
+    const Angle yaw_prev = kalman.x().at<2>();
 
-    // copy covariance matrix to temporary variables
-    const ftype P00 = EKF[mdl_idx].P[0][0];
-    const ftype P01 = EKF[mdl_idx].P[0][1];
-    const ftype P02 = EKF[mdl_idx].P[0][2];
-    const ftype P10 = EKF[mdl_idx].P[1][0];
-    const ftype P11 = EKF[mdl_idx].P[1][1];
-    const ftype P12 = EKF[mdl_idx].P[1][2];
-    const ftype P20 = EKF[mdl_idx].P[2][0];
-    const ftype P21 = EKF[mdl_idx].P[2][1];
-    const ftype P22 = EKF[mdl_idx].P[2][2];
-
-    // calculate innovation variance
-    EKF[mdl_idx].S[0][0] = P00 + velObsVar;
-    EKF[mdl_idx].S[1][1] = P11 + velObsVar;
-    EKF[mdl_idx].S[0][1] = P01;
-    EKF[mdl_idx].S[1][0] = P10;
+    // calculate velocity observation innovations and innovation variance, as the filter update does, to check
+    // them first: the velocity states are observed directly
+    const Velocity innov_N = vel_N - vel[0] * metre_per_second;
+    const Velocity innov_E = vel_E - vel[1] * metre_per_second;
+    const auto S_NN = kalman.p().at<0, 0>() + velObsVar * velocity_variance;
+    const auto S_NE = kalman.p().at<0, 1>();
+    const auto S_EN = kalman.p().at<1, 0>();
+    const auto S_EE = kalman.p().at<1, 1>() + velObsVar * velocity_variance;
+    EKF[mdl_idx].innov[0] = innov_N.numerical_value_in(metre_per_second);
+    EKF[mdl_idx].innov[1] = innov_E.numerical_value_in(metre_per_second);
+    EKF[mdl_idx].S[0][0] = S_NN.numerical_value_in(velocity_variance);
+    EKF[mdl_idx].S[0][1] = S_NE.numerical_value_in(velocity_variance);
+    EKF[mdl_idx].S[1][0] = S_EN.numerical_value_in(velocity_variance);
+    EKF[mdl_idx].S[1][1] = S_EE.numerical_value_in(velocity_variance);
 
     // Perform a chi-square innovation consistency test and calculate a compression scale factor that limits the magnitude of innovations to 5-sigma
-    ftype S_det_inv = (EKF[mdl_idx].S[0][0]*EKF[mdl_idx].S[1][1] - EKF[mdl_idx].S[0][1]*EKF[mdl_idx].S[1][0]);
-    ftype innov_comp_scale_factor = 1.0f;
-    if (fabsF(S_det_inv) > 1E-6f) {
-        // Calculate elements for innovation covariance inverse matrix assuming symmetry
-        S_det_inv = 1.0f / S_det_inv;
-        const ftype S_inv_NN = EKF[mdl_idx].S[1][1] * S_det_inv;
-        const ftype S_inv_EE = EKF[mdl_idx].S[0][0] * S_det_inv;
-        const ftype S_inv_NE = EKF[mdl_idx].S[0][1] * S_det_inv;
-
-        // The following expression was derived symbolically from test ratio = transpose(innovation) * inverse(innovation variance) * innovation = [1x2] * [2,2] * [2,1] = [1,1]
-        const ftype test_ratio = EKF[mdl_idx].innov[0]*(EKF[mdl_idx].innov[0]*S_inv_NN + EKF[mdl_idx].innov[1]*S_inv_NE) + EKF[mdl_idx].innov[1]*(EKF[mdl_idx].innov[0]*S_inv_NE + EKF[mdl_idx].innov[1]*S_inv_EE);
-
-        // If the test ratio is greater than 25 (5 Sigma) then reduce the length of the innovation vector to clip it at 5-Sigma
-        // This protects from large measurement spikes
-        if (test_ratio > 25.0f) {
-            innov_comp_scale_factor = sqrtF(25.0f / test_ratio);
-        }
-    } else {
+    const auto S_det = S_NN * S_EE - S_NE * S_EN;
+    if (!(fabsF(S_det.numerical_value_in(velocity_variance * velocity_variance)) > 1E-6f)) {
         // skip this fusion step because calculation is badly conditioned
         return false;
     }
 
-    // calculate Kalman gain K  and covariance matrix P
-    // autocode from https://github.com/priseborough/3_state_filter/blob/flightLogReplay-wip/calcK.txt
-    // and https://github.com/priseborough/3_state_filter/blob/flightLogReplay-wip/calcPmat.txt
-    const ftype t2 = P00*velObsVar;
-    const ftype t3 = P11*velObsVar;
-    const ftype t4 = velObsVar*velObsVar;
-    const ftype t5 = P00*P11;
-    const ftype t9 = P01*P10;
-    const ftype t6 = t2+t3+t4+t5-t9;
-    ftype t7;
-    if (fabsF(t6) > 1e-6f) {
-        t7 = 1.0f/t6;
-    } else {
-        // skip this fusion step
-        return false;
+    // Calculate elements for innovation covariance inverse matrix assuming symmetry
+    const auto S_inv_NN = S_EE / S_det;
+    const auto S_inv_EE = S_NN / S_det;
+    const auto S_inv_NE = -S_NE / S_det;
+
+    // The following expression was derived symbolically from test ratio = transpose(innovation) * inverse(innovation variance) * innovation = [1x2] * [2,2] * [2,1] = [1,1]
+    const ftype test_ratio = (innov_N * (innov_N * S_inv_NN + innov_E * S_inv_NE) + innov_E * (innov_N * S_inv_NE + innov_E * S_inv_EE)).numerical_value_in(one);
+
+    // If the test ratio is greater than 25 (5 Sigma) then reduce the length of the innovation vector to clip it at 5-Sigma
+    // This protects from large measurement spikes
+    ftype innov_comp_scale_factor = 1.0f;
+    if (test_ratio > 25.0f) {
+        innov_comp_scale_factor = sqrtF(25.0f / test_ratio);
     }
-    const ftype t8 = P11+velObsVar;
-    const ftype t10 = P00+velObsVar;
-    ftype K[3][2];
 
-    K[0][0] = -P01*P10*t7+P00*t7*t8;
-    K[0][1] = -P00*P01*t7+P01*t7*t10;
-    K[1][0] = -P10*P11*t7+P10*t7*t8;
-    K[1][1] = -P01*P10*t7+P11*t7*t10;
-    K[2][0] = -P10*P21*t7+P20*t7*t8;
-    K[2][1] = -P01*P20*t7+P21*t7*t10;
+    // Update states and covariance. The filter corrects the states by its gain times the measurement
+    // minus the prediction: the compression scale factor is applied through the measurement, which
+    // the gain and covariance do not depend on.
+    OutputVariance R{};
+    R.at<0, 0>(velObsVar * velocity_variance);
+    R.at<1, 1>(velObsVar * velocity_variance);
+    ::update(kalman, R, Output{vel_N - innov_N * innov_comp_scale_factor, vel_E - innov_E * innov_comp_scale_factor});
 
-    const ftype t11 = P00*P01*t7;
-    const ftype t15 = P01*t7*t10;
-    const ftype t12 = t11-t15;
-    const ftype t13 = P01*P10*t7;
-    const ftype t16 = P00*t7*t8;
-    const ftype t14 = t13-t16;
-    const ftype t17 = t8*t12;
-    const ftype t18 = P01*t14;
-    const ftype t19 = t17+t18;
-    const ftype t20 = t10*t14;
-    const ftype t21 = P10*t12;
-    const ftype t22 = t20+t21;
-    const ftype t27 = P11*t7*t10;
-    const ftype t23 = t13-t27;
-    const ftype t24 = P10*P11*t7;
-    const ftype t26 = P10*t7*t8;
-    const ftype t25 = t24-t26;
-    const ftype t28 = t8*t23;
-    const ftype t29 = P01*t25;
-    const ftype t30 = t28+t29;
-    const ftype t31 = t10*t25;
-    const ftype t32 = P10*t23;
-    const ftype t33 = t31+t32;
-    const ftype t34 = P01*P20*t7;
-    const ftype t38 = P21*t7*t10;
-    const ftype t35 = t34-t38;
-    const ftype t36 = P10*P21*t7;
-    const ftype t39 = P20*t7*t8;
-    const ftype t37 = t36-t39;
-    const ftype t40 = t8*t35;
-    const ftype t41 = P01*t37;
-    const ftype t42 = t40+t41;
-    const ftype t43 = t10*t37;
-    const ftype t44 = P10*t35;
-    const ftype t45 = t43+t44;
-
-    const ftype min_var = 1e-6f;
-    EKF[mdl_idx].P[0][0] = fmaxF(P00-t12*t19-t14*t22, min_var);
-    EKF[mdl_idx].P[0][1] = P01-t19*t23-t22*t25;
-    EKF[mdl_idx].P[0][2] = P02-t19*t35-t22*t37;
-    EKF[mdl_idx].P[1][0] = P10-t12*t30-t14*t33;
-    EKF[mdl_idx].P[1][1] = fmaxF(P11-t23*t30-t25*t33, min_var);
-    EKF[mdl_idx].P[1][2] = P12-t30*t35-t33*t37;
-    EKF[mdl_idx].P[2][0] = P20-t12*t42-t14*t45;
-    EKF[mdl_idx].P[2][1] = P21-t23*t42-t25*t45;
-    EKF[mdl_idx].P[2][2] = fmaxF(P22-t35*t42-t37*t45, min_var);
-
-    // force symmetry
-    forceSymmetry(mdl_idx);
-
-    // Apply state corrections and capture change in yaw angle
-    const ftype yaw_prev = EKF[mdl_idx].X[2];
-    for (uint8_t obs_index = 0; obs_index < 2; obs_index++) {
-        // apply the state corrections including the compression scale factor
-        for (unsigned row = 0; row < 3; row++) {
-            EKF[mdl_idx].X[row] -= K[row][obs_index] * EKF[mdl_idx].innov[obs_index] * innov_comp_scale_factor;
-        }
-    }
-    const ftype yaw_delta = EKF[mdl_idx].X[2] - yaw_prev;
+    // capture change in yaw angle
+    const ftype yaw_delta = (kalman.x().at<2>() - yaw_prev).numerical_value_in(radian);
 
     // apply the change in yaw angle to the AHRS taking advantage of sparseness in the yaw rotation matrix
     const ftype cos_yaw = cosF(yaw_delta);
@@ -552,15 +584,21 @@ void EKFGSF_yaw::resetEKFGSF()
     memset(&EKF, 0, sizeof(EKF));
     const ftype yaw_increment = M_2PI / (ftype)N_MODELS_EKFGSF;
     for (uint8_t mdl_idx = 0; mdl_idx < N_MODELS_EKFGSF; mdl_idx++) {
+        filters[mdl_idx] = new (filter_storage[mdl_idx].storage) Filter;
+        auto &kalman = filters[mdl_idx]->kalman;
+
         // evenly space initial yaw estimates in the region between +-Pi
-        EKF[mdl_idx].X[2] = -M_PI + (0.5f * yaw_increment) + ((ftype)mdl_idx * yaw_increment);
+        const ftype yaw = -M_PI + (0.5f * yaw_increment) + ((ftype)mdl_idx * yaw_increment);
+        kalman.x(State{ftype(0) * metre_per_second, ftype(0) * metre_per_second, yaw * radian});
 
         // All filter models start with the same weight
         GSF.weights[mdl_idx] = 1.0f / (ftype)N_MODELS_EKFGSF;
 
         // Use half yaw interval for yaw uncertainty as that is the maximum that the best model can be away from truth
         GSF.yaw_variance = sq(0.5f * yaw_increment);
-        EKF[mdl_idx].P[2][2] = GSF.yaw_variance;
+        Covariance P{};
+        P.at<2, 2>(GSF.yaw_variance * (radian * radian));
+        kalman.p(P);
     }
 }
 
@@ -591,16 +629,6 @@ ftype EKFGSF_yaw::gaussianDensity(const uint8_t mdl_idx) const
     normDist = expf(-0.5f * normDist);
     normDist *= sqrtF(t4)/ M_2PI;
     return normDist;
-}
-
-void EKFGSF_yaw::forceSymmetry(const uint8_t mdl_idx)
-{
-    ftype P01 = 0.5f * (EKF[mdl_idx].P[0][1] + EKF[mdl_idx].P[1][0]);
-    ftype P02 = 0.5f * (EKF[mdl_idx].P[0][2] + EKF[mdl_idx].P[2][0]);
-    ftype P12 = 0.5f * (EKF[mdl_idx].P[1][2] + EKF[mdl_idx].P[2][1]);
-    EKF[mdl_idx].P[0][1] = EKF[mdl_idx].P[1][0] = P01;
-    EKF[mdl_idx].P[0][2] = EKF[mdl_idx].P[2][0] = P02;
-    EKF[mdl_idx].P[1][2] = EKF[mdl_idx].P[2][1] = P12;
 }
 
 // Apply a body frame delta angle to the body to earth frame rotation matrix using a small angle approximation
