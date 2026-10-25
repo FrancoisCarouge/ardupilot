@@ -96,7 +96,6 @@ auto make_filter()
         observation{[](const State &x) -> Output {
             return Output{x.at<0>(), x.at<1>()};
         }},
-        update_types<>,
         prediction_types<Velocity, Velocity>};
 }
 
