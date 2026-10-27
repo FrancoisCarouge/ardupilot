@@ -94,17 +94,22 @@ class Board:
         # scan-build compiles with gcc but analyses with clang, which rejects
         # -flifetime-dse and then silently skips the analysis
         analyser = any(os.path.basename(c) == 'c++-analyzer' for c in cfg.env.CXX)
-        if 'clang++' in cfg.env.COMPILER_CXX or cfg.env.TOOLCHAIN == 'emscripten' or analyser:
+        if analyser:
+            # its objects are never run, and -fno-builtin would stop gcc
+            # evaluating the maths functions mp-units uses in constant
+            # expressions
+            zero_init_flags = []
+        elif 'clang++' in cfg.env.COMPILER_CXX or cfg.env.TOOLCHAIN == 'emscripten':
             # Clang can elide calls to our replacement operator new entirely.
-            zero_init_flag = '-fno-builtin'
+            zero_init_flags = ['-fno-builtin']
         else:
-            zero_init_flag = '-flifetime-dse=1'
-        env.CXXFLAGS += [zero_init_flag]
+            zero_init_flags = ['-flifetime-dse=1']
+        env.CXXFLAGS += zero_init_flags
         # Board configure_env methods may replace LINKFLAGS, so add this here
         # to preserve the same behaviour during LTO. QURT invokes hexagon-link
         # directly, which does not accept compiler flags.
         if env.BOARD_CLASS != 'QURT':
-            env.LINKFLAGS += [zero_init_flag]
+            env.LINKFLAGS += zero_init_flags
 
         self.disable_buggy_compiler_warnings(cfg, env)
 
@@ -379,6 +384,19 @@ class Board:
 
         cfg.msg("CXX Compiler", "%s %s"  % (cfg.env.COMPILER_CXX, ".".join(cfg.env.CC_VERSION)))
 
+        # C++26 requires at least g++ 14 or clang 20 (clang 19 cannot parse
+        # libstdc++ 15 <format> as used by mp-units); Apple clang has its own
+        # numbering, Apple clang 17 (Xcode 16.3) is based on LLVM 19 and
+        # uses libc++
+        if 'clang' in cfg.env.COMPILER_CXX:
+            min_clang = 20
+            if 'Apple clang' in cfg.cmd_and_log(cfg.env.CXX + ['--version']):
+                min_clang = 17
+            if not self.cc_version_gte(cfg, min_clang, 0):
+                cfg.fatal("C++26 build requires clang version %u or later, found %s" % (min_clang, '.'.join(cfg.env.CC_VERSION)))
+        elif not self.cc_version_gte(cfg, 14, 0):
+            cfg.fatal("C++26 build requires g++ version 14 or later, found %s" % '.'.join(cfg.env.CC_VERSION))
+
         if cfg.options.assert_cc_version:
             cfg.msg("Checking compiler", "%s %s"  % (cfg.options.assert_cc_version, ".".join(cfg.env.CC_VERSION)))
             have_version = cfg.env.COMPILER_CXX+"-"+'.'.join(list(cfg.env.CC_VERSION))
@@ -434,7 +452,7 @@ class Board:
             env.PRIVATE_KEY = cfg.options.private_key
             
         env.CXXFLAGS += [
-            '-std=gnu++11',
+            '-std=gnu++26',
 
             '-fdata-sections',
             '-ffunction-sections',
@@ -1335,7 +1353,7 @@ class chibios(Board):
             '-L%s' % env.BUILDROOT,
             '-L%s' % cfg.srcnode.make_node('modules/ChibiOS/os/common/startup/ARMCMx/compilers/GCC/ld/').abspath(),
             '-L%s' % cfg.srcnode.make_node('libraries/AP_HAL_ChibiOS/hwdef/common/').abspath(),
-            '-Wl,-Map,Linker.map,%s--cref,--gc-sections,--no-warn-mismatch,--library-path=/ld,--script=ldscript.ld,--defsym=__process_stack_size__=%s,--defsym=__main_stack_size__=%s' % ("--print-memory-usage," if cfg.env.EXT_FLASH_SIZE_MB > 0 and cfg.env.INT_FLASH_PRIMARY == 0 else "", cfg.env.PROCESS_STACK, cfg.env.MAIN_STACK)
+            '-Wl,-Map,Linker.map,%s--cref,--gc-sections,--no-warn-mismatch,--no-warn-rwx-segments,--library-path=/ld,--script=ldscript.ld,--defsym=__process_stack_size__=%s,--defsym=__main_stack_size__=%s' % ("--print-memory-usage," if cfg.env.EXT_FLASH_SIZE_MB > 0 and cfg.env.INT_FLASH_PRIMARY == 0 else "", cfg.env.PROCESS_STACK, cfg.env.MAIN_STACK)
         ]
 
         if cfg.env.DEBUG:
@@ -1349,9 +1367,9 @@ class chibios(Board):
             ]
 
         if cfg.env.COMPILER_CXX == "g++":
-            if not self.cc_version_gte(cfg, 10, 2):
-                # require at least 10.2 compiler
-                cfg.fatal("ChibiOS build requires g++ version 10.2.1 or later, found %s" % '.'.join(cfg.env.CC_VERSION))
+            if not self.cc_version_gte(cfg, 14, 0):
+                # require at least 14.0 compiler for C++26
+                cfg.fatal("ChibiOS build requires g++ version 14 or later, found %s" % '.'.join(cfg.env.CC_VERSION))
             
         if cfg.env.ENABLE_ASSERTS:
             cfg.msg("Enabling ChibiOS asserts", "yes")
@@ -1417,6 +1435,7 @@ class chibios(Board):
             ('10','2','1'),
             ('11','3','0'),
             ('11','4','0'),
+            ('15','2','1'),
         ])
 
         if cfg.env.HAL_CANFD_SUPPORTED:

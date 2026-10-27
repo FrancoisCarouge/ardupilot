@@ -123,10 +123,6 @@ SUPPRESSIONS = [
     ('libraries/AP_NavEKF2/AP_NavEKF2_OptFlowFusion.cpp', {14: '00370e2da55fd80ad77a363614b444dc', 15: '00370e2da55fd80ad77a363614b444dc', 16: '00370e2da55fd80ad77a363614b444dc', 17: '00370e2da55fd80ad77a363614b444dc', 18: '00370e2da55fd80ad77a363614b444dc', 19: '00370e2da55fd80ad77a363614b444dc', 20: '00370e2da55fd80ad77a363614b444dc'}, 'EKF fusion dead store'),  # noqa:E501
     ('libraries/AP_NavEKF2/AP_NavEKF2_OptFlowFusion.cpp', {14: '1b8ea7d62f816c6e0b8297515247092a', 15: '1b8ea7d62f816c6e0b8297515247092a', 16: '1b8ea7d62f816c6e0b8297515247092a', 17: '1b8ea7d62f816c6e0b8297515247092a', 18: '1b8ea7d62f816c6e0b8297515247092a', 19: '1b8ea7d62f816c6e0b8297515247092a', 20: '1b8ea7d62f816c6e0b8297515247092a'}, 'EKF fusion dead store'),  # noqa:E501
     ('libraries/AP_NavEKF2/AP_NavEKF2_OptFlowFusion.cpp', {14: 'abd7c32145cfffd41345332aaec2b55b', 15: 'abd7c32145cfffd41345332aaec2b55b', 16: 'abd7c32145cfffd41345332aaec2b55b', 17: 'abd7c32145cfffd41345332aaec2b55b', 18: 'abd7c32145cfffd41345332aaec2b55b', 19: 'abd7c32145cfffd41345332aaec2b55b', 20: 'abd7c32145cfffd41345332aaec2b55b'}, 'EKF fusion dead store'),  # noqa:E501
-    ('libraries/AP_NavEKF3/AP_NavEKF3_OptFlowFusion.cpp', {14: 'ca29e66e3153db30393fcd784b82b388', 15: 'ca29e66e3153db30393fcd784b82b388', 16: '8e1001e64239f0d286b31971599fc653', 17: '8e1001e64239f0d286b31971599fc653', 18: '8e1001e64239f0d286b31971599fc653', 19: '8e1001e64239f0d286b31971599fc653', 20: '8e1001e64239f0d286b31971599fc653'}, 'EKF fusion dead store'),  # noqa:E501
-    ('libraries/AP_NavEKF3/AP_NavEKF3_OptFlowFusion.cpp', {14: 'b3de9e26ccc2629d60c79e4dcf6a124c', 15: 'b3de9e26ccc2629d60c79e4dcf6a124c', 16: '8f064045e38b9d36aa66a0a3d1b930c8', 17: '8f064045e38b9d36aa66a0a3d1b930c8', 18: '8f064045e38b9d36aa66a0a3d1b930c8', 19: '8f064045e38b9d36aa66a0a3d1b930c8', 20: '8f064045e38b9d36aa66a0a3d1b930c8'}, 'EKF fusion dead store'),  # noqa:E501
-    ('libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp', {14: '79056142243cc0c47f6c8656a19ec2c9', 15: '79056142243cc0c47f6c8656a19ec2c9', 16: '79056142243cc0c47f6c8656a19ec2c9', 17: '79056142243cc0c47f6c8656a19ec2c9', 18: '79056142243cc0c47f6c8656a19ec2c9', 19: '79056142243cc0c47f6c8656a19ec2c9', 20: '79056142243cc0c47f6c8656a19ec2c9'}, 'EKF fusion dead store'),  # noqa:E501
-    ('libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp', {14: '81f6dab0132a7eba4c3381c42e4a0279', 15: '81f6dab0132a7eba4c3381c42e4a0279', 16: '81f6dab0132a7eba4c3381c42e4a0279', 17: '81f6dab0132a7eba4c3381c42e4a0279', 18: '81f6dab0132a7eba4c3381c42e4a0279', 19: '81f6dab0132a7eba4c3381c42e4a0279', 20: '81f6dab0132a7eba4c3381c42e4a0279'}, 'EKF fusion dead store'),  # noqa:E501
 
     # Defensive default for a char* that is then formatted into a GCS message.
     # Each switch below currently assigns the string in every case, so the
@@ -146,7 +142,7 @@ SUPPRESSIONS = [
     # but is reliably 0 because every instance is heap-allocated via
     # NEW_NOTHROW (calloc-zeroed).  We don't add a redundant initialiser just
     # to satisfy the analyser.  The finding appears at the read inside set().
-    ('libraries/GCS_MAVLink/GCS_Common.cpp', {16: '5ae47b78289abe850dd5ac59ab903eb7', 17: '5ae47b78289abe850dd5ac59ab903eb7', 18: '5ae47b78289abe850dd5ac59ab903eb7', 19: '5ae47b78289abe850dd5ac59ab903eb7', 20: '5ae47b78289abe850dd5ac59ab903eb7'}, 'calloc-zeroed _num_intervals'),  # noqa:E501
+    ('libraries/GCS_MAVLink/GCS_Common.cpp', {16: '5ae47b78289abe850dd5ac59ab903eb7', 17: '5ae47b78289abe850dd5ac59ab903eb7', 18: '5ae47b78289abe850dd5ac59ab903eb7', 19: '5ae47b78289abe850dd5ac59ab903eb7'}, 'calloc-zeroed _num_intervals'),  # noqa:E501
 
     # update_node_status() reads node->last_log_ms; the node_status_log_data
     # constructor only initialises id, but nodes are heap-allocated via

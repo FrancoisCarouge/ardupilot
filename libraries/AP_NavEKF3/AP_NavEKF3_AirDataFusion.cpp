@@ -2,6 +2,7 @@
 
 #include "AP_NavEKF3.h"
 #include "AP_NavEKF3_core.h"
+#include "AP_NavEKF3_typed.h"
 #include <AP_DAL/AP_DAL.h>
 
 #define P (const_cast<const Matrix24 &>(Pmut))
@@ -21,20 +22,19 @@
 */
 void NavEKF3_core::FuseAirspeed()
 {
-    // declarations
-    ftype SH_TAS[3];
-    ftype SK_TAS[2];
-    Vector24 H_TAS = {};
+    using namespace NavEKF3_typed;
+    constexpr auto velocity_variance = metre_per_second * metre_per_second;
 
     // copy required states to local variable names
-    const ftype vn = stateStruct.velocity.x;
-    const ftype ve = stateStruct.velocity.y;
-    const ftype vd = stateStruct.velocity.z;
-    const ftype vwn = stateStruct.wind_vel.x;
-    const ftype vwe = stateStruct.wind_vel.y;
+    const StateView states{AP_LinearAlgebra::MatrixView<ftype, 24, 1>{&statesArray[0]}};
+    const Velocity vn = states.at<4>();
+    const Velocity ve = states.at<5>();
+    const Velocity vd = states.at<6>();
+    const Velocity vwn = states.at<22>();
+    const Velocity vwe = states.at<23>();
 
     // calculate the predicted airspeed
-    const ftype VtasPred = norm((ve - vwe) , (vn - vwn) , vd);
+    const ftype VtasPred = norm((ve - vwe).numerical_value_in(metre_per_second), (vn - vwn).numerical_value_in(metre_per_second), vd.numerical_value_in(metre_per_second));
     // perform fusion of True Airspeed measurement
     if (VtasPred > 1.0f)
     {
@@ -42,18 +42,19 @@ void NavEKF3_core::FuseAirspeed()
         innovVtas = VtasPred - tasDataDelayed.tas;
 
         // calculate observation jacobians
-        SH_TAS[0] = 1.0f/VtasPred;
-        SH_TAS[1] = (SH_TAS[0]*(2.0f*ve - 2.0f*vwe))*0.5f;
-        SH_TAS[2] = (SH_TAS[0]*(2.0f*vn - 2.0f*vwn))*0.5f;
-        H_TAS[4] = SH_TAS[2];
-        H_TAS[5] = SH_TAS[1];
-        H_TAS[6] = vd*SH_TAS[0];
-        H_TAS[22] = -SH_TAS[2];
-        H_TAS[23] = -SH_TAS[1];
-        // calculate Kalman gains
-        ftype temp = (tasDataDelayed.tasVariance + SH_TAS[2]*(P[4][4]*SH_TAS[2] + P[5][4]*SH_TAS[1] - P[22][4]*SH_TAS[2] - P[23][4]*SH_TAS[1] + P[6][4]*vd*SH_TAS[0]) + SH_TAS[1]*(P[4][5]*SH_TAS[2] + P[5][5]*SH_TAS[1] - P[22][5]*SH_TAS[2] - P[23][5]*SH_TAS[1] + P[6][5]*vd*SH_TAS[0]) - SH_TAS[2]*(P[4][22]*SH_TAS[2] + P[5][22]*SH_TAS[1] - P[22][22]*SH_TAS[2] - P[23][22]*SH_TAS[1] + P[6][22]*vd*SH_TAS[0]) - SH_TAS[1]*(P[4][23]*SH_TAS[2] + P[5][23]*SH_TAS[1] - P[22][23]*SH_TAS[2] - P[23][23]*SH_TAS[1] + P[6][23]*vd*SH_TAS[0]) + vd*SH_TAS[0]*(P[4][6]*SH_TAS[2] + P[5][6]*SH_TAS[1] - P[22][6]*SH_TAS[2] - P[23][6]*SH_TAS[1] + P[6][6]*vd*SH_TAS[0]));
+        ObservationModel<Velocity> H_TAS{};
+        H_TAS.at<4>((vn - vwn) / (VtasPred * metre_per_second));
+        H_TAS.at<5>((ve - vwe) / (VtasPred * metre_per_second));
+        H_TAS.at<6>(vd / (VtasPred * metre_per_second));
+        H_TAS.at<22>(-(vn - vwn) / (VtasPred * metre_per_second));
+        H_TAS.at<23>(-(ve - vwe) / (VtasPred * metre_per_second));
+
+        // calculate the innovation variance and Kalman gains
+        const CovarianceView covariance{AP_LinearAlgebra::MatrixView<ftype, 24, 24>{&P[0][0]}};
+        const auto PHt = covariance * fcarouge::transposed(H_TAS);
+        const auto S = (H_TAS * PHt).at() + tasDataDelayed.tasVariance * velocity_variance;
+        const ftype temp = S.numerical_value_in(velocity_variance);
         if (temp >= tasDataDelayed.tasVariance) {
-            SK_TAS[0] = 1.0f / temp;
             faultStatus.bad_airspeed = false;
         } else {
             // the calculation is badly conditioned, so we cannot perform fusion on this step
@@ -62,7 +63,7 @@ void NavEKF3_core::FuseAirspeed()
             faultStatus.bad_airspeed = true;
             return;
         }
-        SK_TAS[1] = SH_TAS[1];
+        const auto K = PHt / S;
 
         uint32_t kalman_mask = 0; // values to calculate in Kfusion (others are set to zero)
 
@@ -95,13 +96,13 @@ void NavEKF3_core::FuseAirspeed()
         for (auto i=0; i<24; i++) {
             ftype res = 0;
             if (kalman_mask & (1<<i)) {
-                res = SK_TAS[0]*(P[i][4]*SH_TAS[2] - P[i][22]*SH_TAS[2] + P[i][5]*SK_TAS[1] - P[i][23]*SK_TAS[1] + P[i][6]*vd*SH_TAS[0]);
+                res = K.data()(i);
             }
             Kfusion[i] = res;
         }
 
         // calculate measurement innovation variance
-        varInnovVtas = 1.0f/SK_TAS[0];
+        varInnovVtas = temp;
 
         // calculate the innovation consistency test ratio
         tasTestRatio = sq(innovVtas) / (sq(MAX(0.01f * (ftype)frontend->_tasInnovGate, 1.0f)) * varInnovVtas);
@@ -120,19 +121,13 @@ void NavEKF3_core::FuseAirspeed()
             // restart the counter
             lastTasPassTime_ms = imuSampleTime_ms;
 
-            // correct the covariance P = (I - K*H)*P = P - K*H*P. take advantage of
-            // the zero elements of H to reduce the number of operations.
+            // correct the covariance P = (I - K*H)*P = P - K*H*P. K*H*P is written to its
+            // array, its type checked against the covariance without being evaluated.
+            const auto HP = H_TAS * covariance;
+            static_assert(std::is_convertible_v<decltype(K * HP), Covariance>);
             for (unsigned i = 0; i<=stateIndexLim; i++) {
-                // j as the inner loop allows the compiler to hoist the KH product
-                // to save computation, and do the inner indexing more efficiently.
                 for (unsigned j = 0; j<=stateIndexLim; j++) {
-                    ftype res = 0;
-                    res += (Kfusion[i] * H_TAS[4]) * P[4][j];
-                    res += (Kfusion[i] * H_TAS[5]) * P[5][j];
-                    res += (Kfusion[i] * H_TAS[6]) * P[6][j];
-                    res += (Kfusion[i] * H_TAS[22]) * P[22][j];
-                    res += (Kfusion[i] * H_TAS[23]) * P[23][j];
-                    KHP[i][j] = res;
+                    KHP[i][j] = Kfusion[i] * HP.data()(j);
                 }
             }
 
@@ -226,28 +221,27 @@ void NavEKF3_core::SelectBetaDragFusion()
 */
 void NavEKF3_core::FuseSideslip()
 {
-    // declarations
-    const ftype R_BETA = 0.03f; // assume a sideslip angle RMS of ~10 deg
-    Vector13 SH_BETA;
-    Vector8 SK_BETA;
+    using namespace NavEKF3_typed;
+    // the sideslip is observed as the ratio of the lateral to the forward wind relative velocity
+    const Unitless R_BETA = 0.03f * mp_units::one; // assume a sideslip angle RMS of ~10 deg
     Vector3F vel_rel_wind;
-    Vector24 H_BETA;
 
     // copy required states to local variable names
-    const ftype q0 = stateStruct.quat[0];
-    const ftype q1 = stateStruct.quat[1];
-    const ftype q2 = stateStruct.quat[2];
-    const ftype q3 = stateStruct.quat[3];
-    const ftype vn = stateStruct.velocity.x;
-    const ftype ve = stateStruct.velocity.y;
-    const ftype vd = stateStruct.velocity.z;
-    const ftype vwn = stateStruct.wind_vel.x;
-    const ftype vwe = stateStruct.wind_vel.y;
+    const StateView states{AP_LinearAlgebra::MatrixView<ftype, 24, 1>{&statesArray[0]}};
+    const Unitless q0 = states.at<0>();
+    const Unitless q1 = states.at<1>();
+    const Unitless q2 = states.at<2>();
+    const Unitless q3 = states.at<3>();
+    const Velocity vn = states.at<4>();
+    const Velocity ve = states.at<5>();
+    const Velocity vd = states.at<6>();
+    const Velocity vwn = states.at<22>();
+    const Velocity vwe = states.at<23>();
 
     // calculate predicted wind relative velocity in NED
-    vel_rel_wind.x = vn - vwn;
-    vel_rel_wind.y = ve - vwe;
-    vel_rel_wind.z = vd;
+    vel_rel_wind.x = (vn - vwn).numerical_value_in(metre_per_second);
+    vel_rel_wind.y = (ve - vwe).numerical_value_in(metre_per_second);
+    vel_rel_wind.z = vd.numerical_value_in(metre_per_second);
 
     // rotate into body axes
     vel_rel_wind = prevTnb * vel_rel_wind;
@@ -256,43 +250,42 @@ void NavEKF3_core::FuseSideslip()
     if (vel_rel_wind.x > 5.0f)
     {
         // Calculate observation jacobians
-        SH_BETA[0] = (vn - vwn)*(sq(q0) + sq(q1) - sq(q2) - sq(q3)) - vd*(2*q0*q2 - 2*q1*q3) + (ve - vwe)*(2*q0*q3 + 2*q1*q2);
-        if (fabsF(SH_BETA[0]) <= 1e-9f) {
+        const Velocity SH_BETA_0 = (vn - vwn)*(sq(q0) + sq(q1) - sq(q2) - sq(q3)) - vd*(2*q0*q2 - 2*q1*q3) + (ve - vwe)*(2*q0*q3 + 2*q1*q2);
+        if (fabsF(SH_BETA_0.numerical_value_in(metre_per_second)) <= 1e-9f) {
             faultStatus.bad_sideslip = true;
             return;
         } else {
             faultStatus.bad_sideslip = false;
         }
-        SH_BETA[1] = (ve - vwe)*(sq(q0) - sq(q1) + sq(q2) - sq(q3)) + vd*(2*q0*q1 + 2*q2*q3) - (vn - vwn)*(2*q0*q3 - 2*q1*q2);
-        SH_BETA[2] = vn - vwn;
-        SH_BETA[3] = ve - vwe;
-        SH_BETA[4] = 1/sq(SH_BETA[0]);
-        SH_BETA[5] = 1/SH_BETA[0];
-        SH_BETA[6] = SH_BETA[5]*(sq(q0) - sq(q1) + sq(q2) - sq(q3));
-        SH_BETA[7] = sq(q0) + sq(q1) - sq(q2) - sq(q3);
-        SH_BETA[8] = 2*q0*SH_BETA[3] - 2*q3*SH_BETA[2] + 2*q1*vd;
-        SH_BETA[9] = 2*q0*SH_BETA[2] + 2*q3*SH_BETA[3] - 2*q2*vd;
-        SH_BETA[10] = 2*q2*SH_BETA[2] - 2*q1*SH_BETA[3] + 2*q0*vd;
-        SH_BETA[11] = 2*q1*SH_BETA[2] + 2*q2*SH_BETA[3] + 2*q3*vd;
-        SH_BETA[12] = 2*q0*q3;
+        const Velocity SH_BETA_1 = (ve - vwe)*(sq(q0) - sq(q1) + sq(q2) - sq(q3)) + vd*(2*q0*q1 + 2*q2*q3) - (vn - vwn)*(2*q0*q3 - 2*q1*q2);
+        const Velocity SH_BETA_2 = vn - vwn;
+        const Velocity SH_BETA_3 = ve - vwe;
+        const auto SH_BETA_4 = 1/(SH_BETA_0*SH_BETA_0);
+        const auto SH_BETA_5 = 1/SH_BETA_0;
+        const auto SH_BETA_6 = SH_BETA_5*(sq(q0) - sq(q1) + sq(q2) - sq(q3));
+        const Unitless SH_BETA_7 = sq(q0) + sq(q1) - sq(q2) - sq(q3);
+        const Velocity SH_BETA_8 = 2*q0*SH_BETA_3 - 2*q3*SH_BETA_2 + 2*q1*vd;
+        const Velocity SH_BETA_9 = 2*q0*SH_BETA_2 + 2*q3*SH_BETA_3 - 2*q2*vd;
+        const Velocity SH_BETA_10 = 2*q2*SH_BETA_2 - 2*q1*SH_BETA_3 + 2*q0*vd;
+        const Velocity SH_BETA_11 = 2*q1*SH_BETA_2 + 2*q2*SH_BETA_3 + 2*q3*vd;
+        const Unitless SH_BETA_12 = 2*q0*q3;
 
-        H_BETA[0] = SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9];
-        H_BETA[1] = SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11];
-        H_BETA[2] = SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10];
-        H_BETA[3] = - SH_BETA[5]*SH_BETA[9] - SH_BETA[1]*SH_BETA[4]*SH_BETA[8];
-        H_BETA[4] = - SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) - SH_BETA[1]*SH_BETA[4]*SH_BETA[7];
-        H_BETA[5] = SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2);
-        H_BETA[6] = SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3);
-        for (uint8_t i=7; i<=21; i++) {
-            H_BETA[i] = 0.0f;
-        }
-        H_BETA[22] = SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7];
-        H_BETA[23] = SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2) - SH_BETA[6];
+        ObservationModel<Unitless> H_BETA{};
+        H_BETA.at<0>(SH_BETA_5*SH_BETA_8 - SH_BETA_1*SH_BETA_4*SH_BETA_9);
+        H_BETA.at<1>(SH_BETA_5*SH_BETA_10 - SH_BETA_1*SH_BETA_4*SH_BETA_11);
+        H_BETA.at<2>(SH_BETA_5*SH_BETA_11 + SH_BETA_1*SH_BETA_4*SH_BETA_10);
+        H_BETA.at<3>(- SH_BETA_5*SH_BETA_9 - SH_BETA_1*SH_BETA_4*SH_BETA_8);
+        H_BETA.at<4>(- SH_BETA_5*(SH_BETA_12 - 2*q1*q2) - SH_BETA_1*SH_BETA_4*SH_BETA_7);
+        H_BETA.at<5>(SH_BETA_6 - SH_BETA_1*SH_BETA_4*(SH_BETA_12 + 2*q1*q2));
+        H_BETA.at<6>(SH_BETA_5*(2*q0*q1 + 2*q2*q3) + SH_BETA_1*SH_BETA_4*(2*q0*q2 - 2*q1*q3));
+        H_BETA.at<22>(SH_BETA_5*(SH_BETA_12 - 2*q1*q2) + SH_BETA_1*SH_BETA_4*SH_BETA_7);
+        H_BETA.at<23>(SH_BETA_1*SH_BETA_4*(SH_BETA_12 + 2*q1*q2) - SH_BETA_6);
 
         // Calculate Kalman gains
-        ftype temp = (R_BETA - (SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7])*(P[22][4]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) - P[4][4]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) + P[5][4]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) - P[23][4]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) + P[0][4]*(SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9]) + P[1][4]*(SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11]) + P[2][4]*(SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10]) - P[3][4]*(SH_BETA[5]*SH_BETA[9] + SH_BETA[1]*SH_BETA[4]*SH_BETA[8]) + P[6][4]*(SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3))) + (SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7])*(P[22][22]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) - P[4][22]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) + P[5][22]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) - P[23][22]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) + P[0][22]*(SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9]) + P[1][22]*(SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11]) + P[2][22]*(SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10]) - P[3][22]*(SH_BETA[5]*SH_BETA[9] + SH_BETA[1]*SH_BETA[4]*SH_BETA[8]) + P[6][22]*(SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3))) + (SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2))*(P[22][5]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) - P[4][5]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) + P[5][5]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) - P[23][5]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) + P[0][5]*(SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9]) + P[1][5]*(SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11]) + P[2][5]*(SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10]) - P[3][5]*(SH_BETA[5]*SH_BETA[9] + SH_BETA[1]*SH_BETA[4]*SH_BETA[8]) + P[6][5]*(SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3))) - (SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2))*(P[22][23]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) - P[4][23]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) + P[5][23]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) - P[23][23]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) + P[0][23]*(SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9]) + P[1][23]*(SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11]) + P[2][23]*(SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10]) - P[3][23]*(SH_BETA[5]*SH_BETA[9] + SH_BETA[1]*SH_BETA[4]*SH_BETA[8]) + P[6][23]*(SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3))) + (SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9])*(P[22][0]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) - P[4][0]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) + P[5][0]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) - P[23][0]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) + P[0][0]*(SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9]) + P[1][0]*(SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11]) + P[2][0]*(SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10]) - P[3][0]*(SH_BETA[5]*SH_BETA[9] + SH_BETA[1]*SH_BETA[4]*SH_BETA[8]) + P[6][0]*(SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3))) + (SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11])*(P[22][1]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) - P[4][1]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) + P[5][1]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) - P[23][1]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) + P[0][1]*(SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9]) + P[1][1]*(SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11]) + P[2][1]*(SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10]) - P[3][1]*(SH_BETA[5]*SH_BETA[9] + SH_BETA[1]*SH_BETA[4]*SH_BETA[8]) + P[6][1]*(SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3))) + (SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10])*(P[22][2]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) - P[4][2]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) + P[5][2]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) - P[23][2]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) + P[0][2]*(SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9]) + P[1][2]*(SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11]) + P[2][2]*(SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10]) - P[3][2]*(SH_BETA[5]*SH_BETA[9] + SH_BETA[1]*SH_BETA[4]*SH_BETA[8]) + P[6][2]*(SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3))) - (SH_BETA[5]*SH_BETA[9] + SH_BETA[1]*SH_BETA[4]*SH_BETA[8])*(P[22][3]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) - P[4][3]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) + P[5][3]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) - P[23][3]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) + P[0][3]*(SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9]) + P[1][3]*(SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11]) + P[2][3]*(SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10]) - P[3][3]*(SH_BETA[5]*SH_BETA[9] + SH_BETA[1]*SH_BETA[4]*SH_BETA[8]) + P[6][3]*(SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3))) + (SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3))*(P[22][6]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) - P[4][6]*(SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7]) + P[5][6]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) - P[23][6]*(SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2)) + P[0][6]*(SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9]) + P[1][6]*(SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11]) + P[2][6]*(SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10]) - P[3][6]*(SH_BETA[5]*SH_BETA[9] + SH_BETA[1]*SH_BETA[4]*SH_BETA[8]) + P[6][6]*(SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3))));
-        if (temp >= R_BETA) {
-            SK_BETA[0] = 1.0f / temp;
+        const CovarianceView covariance{AP_LinearAlgebra::MatrixView<ftype, 24, 24>{&P[0][0]}};
+        const auto PHt = covariance * fcarouge::transposed(H_BETA);
+        const Unitless S = (H_BETA * PHt).at() + R_BETA;
+        if (S >= R_BETA) {
             faultStatus.bad_sideslip = false;
         } else {
             // the calculation is badly conditioned, so we cannot perform fusion on this step
@@ -301,13 +294,7 @@ void NavEKF3_core::FuseSideslip()
             faultStatus.bad_sideslip = true;
             return;
         }
-        SK_BETA[1] = SH_BETA[5]*(SH_BETA[12] - 2*q1*q2) + SH_BETA[1]*SH_BETA[4]*SH_BETA[7];
-        SK_BETA[2] = SH_BETA[6] - SH_BETA[1]*SH_BETA[4]*(SH_BETA[12] + 2*q1*q2);
-        SK_BETA[3] = SH_BETA[5]*(2*q0*q1 + 2*q2*q3) + SH_BETA[1]*SH_BETA[4]*(2*q0*q2 - 2*q1*q3);
-        SK_BETA[4] = SH_BETA[5]*SH_BETA[10] - SH_BETA[1]*SH_BETA[4]*SH_BETA[11];
-        SK_BETA[5] = SH_BETA[5]*SH_BETA[8] - SH_BETA[1]*SH_BETA[4]*SH_BETA[9];
-        SK_BETA[6] = SH_BETA[5]*SH_BETA[11] + SH_BETA[1]*SH_BETA[4]*SH_BETA[10];
-        SK_BETA[7] = SH_BETA[5]*SH_BETA[9] + SH_BETA[1]*SH_BETA[4]*SH_BETA[8];
+        const auto K = PHt / S;
 
         uint32_t kalman_mask = 0; // values to calculate in Kfusion (others are set to zero)
 
@@ -340,7 +327,7 @@ void NavEKF3_core::FuseSideslip()
         for (auto i=0; i<24; i++) {
             ftype res = 0;
             if (kalman_mask & (1<<i)) {
-                res = SK_BETA[0]*(P[i][0]*SK_BETA[5] + P[i][1]*SK_BETA[4] - P[i][4]*SK_BETA[1] + P[i][5]*SK_BETA[2] + P[i][2]*SK_BETA[6] + P[i][6]*SK_BETA[3] - P[i][3]*SK_BETA[7] + P[i][22]*SK_BETA[1] - P[i][23]*SK_BETA[2]);
+                res = K.data()(i);
             }
             Kfusion[i] = res;
         }
@@ -348,23 +335,13 @@ void NavEKF3_core::FuseSideslip()
         // calculate predicted sideslip angle and innovation using small angle approximation
         innovBeta = constrain_ftype(vel_rel_wind.y / vel_rel_wind.x, -0.5f, 0.5f);
 
-        // correct the covariance P = (I - K*H)*P = P - K*H*P. take advantage of
-        // the zero elements of H to reduce the number of operations.
+        // correct the covariance P = (I - K*H)*P = P - K*H*P. K*H*P is written to its
+        // array, its type checked against the covariance without being evaluated.
+        const auto HP = H_BETA * covariance;
+        static_assert(std::is_convertible_v<decltype(K * HP), Covariance>);
         for (unsigned i = 0; i<=stateIndexLim; i++) {
-            // j as the inner loop allows the compiler to hoist the KH product
-            // to save computation, and do the inner indexing more efficiently.
             for (unsigned j = 0; j<=stateIndexLim; j++) {
-                ftype res = 0;
-                res += (Kfusion[i] * H_BETA[0]) * P[0][j];
-                res += (Kfusion[i] * H_BETA[1]) * P[1][j];
-                res += (Kfusion[i] * H_BETA[2]) * P[2][j];
-                res += (Kfusion[i] * H_BETA[3]) * P[3][j];
-                res += (Kfusion[i] * H_BETA[4]) * P[4][j];
-                res += (Kfusion[i] * H_BETA[5]) * P[5][j];
-                res += (Kfusion[i] * H_BETA[6]) * P[6][j];
-                res += (Kfusion[i] * H_BETA[22]) * P[22][j];
-                res += (Kfusion[i] * H_BETA[23]) * P[23][j];
-                KHP[i][j] = res;
+                KHP[i][j] = Kfusion[i] * HP.data()(j);
             }
         }
 
@@ -381,219 +358,148 @@ void NavEKF3_core::FuseSideslip()
 */
 void NavEKF3_core::FuseDragForces()
 {
+    using namespace NavEKF3_typed;
+    using mp_units::si::kilogram;
+    using mp_units::si::metre;
+    using mp_units::si::second;
+    constexpr auto acceleration = metre / second / second;
+    using Acceleration = Quantity<acceleration>;
+    using Rate = Quantity<mp_units::one / second>;
+
     // drag model parameters
-    const ftype bcoef_x = frontend->_ballisticCoef_x.get();
-    const ftype bcoef_y = frontend->_ballisticCoef_y.get();
-    const ftype mcoef = frontend->_momentumDragCoef.get();
-    const bool using_bcoef_x = bcoef_x > 1.0f;
-    const bool using_bcoef_y = bcoef_y > 1.0f;
-    const bool using_mcoef = mcoef > 0.001f;
+    const Quantity<kilogram / (metre * metre)> bcoef_x = frontend->_ballisticCoef_x.get() * (kilogram / (metre * metre));
+    const Quantity<kilogram / (metre * metre)> bcoef_y = frontend->_ballisticCoef_y.get() * (kilogram / (metre * metre));
+    const Rate mcoef = frontend->_momentumDragCoef.get() * (mp_units::one / second);
+    const bool using_bcoef_x = bcoef_x.numerical_value_in(kilogram / (metre * metre)) > 1.0f;
+    const bool using_bcoef_y = bcoef_y.numerical_value_in(kilogram / (metre * metre)) > 1.0f;
+    const bool using_mcoef = mcoef.numerical_value_in(mp_units::one / second) > 0.001f;
 
     ZERO_FARRAY(Kfusion);
-    Vector24 Hfusion; // Observation Jacobians
-    const ftype R_ACC = sq(fmaxF(frontend->_dragObsNoise, 0.5f));
+    const Quantity<acceleration * acceleration> R_ACC = sq(fmaxF(frontend->_dragObsNoise, 0.5f)) * (acceleration * acceleration);
     const ftype density_ratio = 1.0f/sq(dal.get_EAS2TAS());
-    const ftype rho = fmaxF(1.225f * density_ratio, 0.1f); // air density
+    const Quantity<kilogram / (metre * metre * metre)> rho = fmaxF(1.225f * density_ratio, 0.1f) * (kilogram / (metre * metre * metre)); // air density
 
-    // get latest estimated orientation
-    const ftype &q0 = stateStruct.quat[0];
-    const ftype &q1 = stateStruct.quat[1];
-    const ftype &q2 = stateStruct.quat[2];
-    const ftype &q3 = stateStruct.quat[3];
-
-    // get latest velocity in earth frame
-    const ftype &vn = stateStruct.velocity.x;
-    const ftype &ve = stateStruct.velocity.y;
-    const ftype &vd = stateStruct.velocity.z;
-
-    // get latest wind velocity in earth frame
-    const ftype &vwn = stateStruct.wind_vel.x;
-    const ftype &vwe = stateStruct.wind_vel.y;
+    // the states, of which the first axis corrects the wind used by the second
+    const StateView states{AP_LinearAlgebra::MatrixView<ftype, 24, 1>{&statesArray[0]}};
+    const CovarianceView covariance{AP_LinearAlgebra::MatrixView<ftype, 24, 24>{&P[0][0]}};
 
     // predicted specific forces
     // calculate relative wind velocity in earth frame and rotate into body frame
-    const Vector3F rel_wind_earth(vn - vwn, ve - vwe, vd);
+    const Vector3F rel_wind_earth((states.at<4>() - states.at<22>()).numerical_value_in(metre_per_second),
+                                  (states.at<5>() - states.at<23>()).numerical_value_in(metre_per_second),
+                                  states.at<6>().numerical_value_in(metre_per_second));
     const Vector3F rel_wind_body = prevTnb * rel_wind_earth;
 
     // perform sequential fusion of XY specific forces
     for (uint8_t axis_index = 0; axis_index < 2; axis_index++) {
+        // get latest estimated orientation, velocity and wind velocity in earth frame
+        const Unitless q0 = states.at<0>();
+        const Unitless q1 = states.at<1>();
+        const Unitless q2 = states.at<2>();
+        const Unitless q3 = states.at<3>();
+        const Velocity vn = states.at<4>();
+        const Velocity ve = states.at<5>();
+        const Velocity vd = states.at<6>();
+        const Velocity vwn = states.at<22>();
+        const Velocity vwe = states.at<23>();
+
         // correct accel data for bias
-        const ftype mea_acc = dragSampleDelayed.accelXY[axis_index]  - stateStruct.accel_bias[axis_index] / dtEkfAvg;
+        const Acceleration mea_acc = (dragSampleDelayed.accelXY[axis_index]  - stateStruct.accel_bias[axis_index] / dtEkfAvg) * acceleration;
+        const Velocity rel_wind = rel_wind_body[axis_index] * metre_per_second;
+        const Quantity<kilogram / (metre * metre)> bcoef = axis_index == 0 ? bcoef_x : bcoef_y;
+        const bool using_bcoef = axis_index == 0 ? using_bcoef_x : using_bcoef_y;
 
         // Acceleration in m/s/s predicted using vehicle and wind velocity estimates
         // Initialised to measured value and updated later using available drag model
-        ftype predAccel = mea_acc;
+        Acceleration predAccel = mea_acc;
 
         // predicted sign of drag force
         const ftype dragForceSign = is_positive(rel_wind_body[axis_index]) ? -1.0f : 1.0f;
 
-        if (axis_index == 0) {
-            // drag can be modelled as an arbitrary  combination of bluff body drag that proportional to
-            // speed squared, and rotor momentum drag that is proportional to speed.
-            ftype Kaccx; // Derivative of specific force wrt airspeed
-            if (using_mcoef && using_bcoef_x) {
-                // mixed bluff body and propeller momentum drag
-                const ftype airSpd = (bcoef_x / rho) * (- mcoef + sqrtF(sq(mcoef) + 2.0f * (rho / bcoef_x) * fabsF(mea_acc)));
-                Kaccx = fmaxF(1e-1f, (rho / bcoef_x) * airSpd + mcoef * density_ratio);
-                predAccel = (0.5f / bcoef_x) * rho * sq(rel_wind_body[0]) * dragForceSign - rel_wind_body[0] * mcoef * density_ratio;
-            } else if (using_mcoef) {
-                // propeller momentum drag only
-                Kaccx = fmaxF(1e-1f, mcoef * density_ratio);
-                predAccel = - rel_wind_body[0] * mcoef * density_ratio;
-            } else if (using_bcoef_x) {
-                // bluff body drag only
-                const ftype airSpd = sqrtF((2.0f * bcoef_x * fabsF(mea_acc)) / rho);
-                Kaccx = fmaxF(1e-1f, (rho / bcoef_x) * airSpd);
-                predAccel = (0.5f / bcoef_x) * rho * sq(rel_wind_body[0]) * dragForceSign;
-            } else {
-                // skip this axis
-                continue;
-            }
-
-            // intermediate variables
-            const ftype HK0 = vn - vwn;
-            const ftype HK1 = ve - vwe;
-            const ftype HK2 = HK0*q0 + HK1*q3 - q2*vd;
-            const ftype HK3 = 2*Kaccx;
-            const ftype HK4 = HK0*q1 + HK1*q2 + q3*vd;
-            const ftype HK5 = HK0*q2 - HK1*q1 + q0*vd;
-            const ftype HK6 = -HK0*q3 + HK1*q0 + q1*vd;
-            const ftype HK7 = sq(q0) + sq(q1) - sq(q2) - sq(q3);
-            const ftype HK8 = HK7*Kaccx;
-            const ftype HK9 = q0*q3 + q1*q2;
-            const ftype HK10 = HK3*HK9;
-            const ftype HK11 = q0*q2 - q1*q3;
-            const ftype HK12 = 2*HK9;
-            const ftype HK13 = 2*HK11;
-            const ftype HK14 = 2*HK4;
-            const ftype HK15 = 2*HK2;
-            const ftype HK16 = 2*HK5;
-            const ftype HK17 = 2*HK6;
-            const ftype HK18 = -HK12*P[0][23] + HK12*P[0][5] - HK13*P[0][6] + HK14*P[0][1] + HK15*P[0][0] - HK16*P[0][2] + HK17*P[0][3] - HK7*P[0][22] + HK7*P[0][4];
-            const ftype HK19 = HK12*P[5][23];
-            const ftype HK20 = -HK12*P[23][23] - HK13*P[6][23] + HK14*P[1][23] + HK15*P[0][23] - HK16*P[2][23] + HK17*P[3][23] + HK19 - HK7*P[22][23] + HK7*P[4][23];
-            const ftype HK21 = sq(Kaccx);
-            const ftype HK22 = HK12*HK21;
-            const ftype HK23 = HK12*P[5][5] - HK13*P[5][6] + HK14*P[1][5] + HK15*P[0][5] - HK16*P[2][5] + HK17*P[3][5] - HK19 + HK7*P[4][5] - HK7*P[5][22];
-            const ftype HK24 = HK12*P[5][6] - HK12*P[6][23] - HK13*P[6][6] + HK14*P[1][6] + HK15*P[0][6] - HK16*P[2][6] + HK17*P[3][6] + HK7*P[4][6] - HK7*P[6][22];
-            const ftype HK25 = HK7*P[4][22];
-            const ftype HK26 = -HK12*P[4][23] + HK12*P[4][5] - HK13*P[4][6] + HK14*P[1][4] + HK15*P[0][4] - HK16*P[2][4] + HK17*P[3][4] - HK25 + HK7*P[4][4];
-            const ftype HK27 = HK21*HK7;
-            const ftype HK28 = -HK12*P[22][23] + HK12*P[5][22] - HK13*P[6][22] + HK14*P[1][22] + HK15*P[0][22] - HK16*P[2][22] + HK17*P[3][22] + HK25 - HK7*P[22][22];
-            const ftype HK29 = -HK12*P[1][23] + HK12*P[1][5] - HK13*P[1][6] + HK14*P[1][1] + HK15*P[0][1] - HK16*P[1][2] + HK17*P[1][3] - HK7*P[1][22] + HK7*P[1][4];
-            const ftype HK30 = -HK12*P[2][23] + HK12*P[2][5] - HK13*P[2][6] + HK14*P[1][2] + HK15*P[0][2] - HK16*P[2][2] + HK17*P[2][3] - HK7*P[2][22] + HK7*P[2][4];
-            const ftype HK31 = -HK12*P[3][23] + HK12*P[3][5] - HK13*P[3][6] + HK14*P[1][3] + HK15*P[0][3] - HK16*P[2][3] + HK17*P[3][3] - HK7*P[3][22] + HK7*P[3][4];
-            // const ftype HK32 = Kaccx/(-HK13*HK21*HK24 + HK14*HK21*HK29 + HK15*HK18*HK21 - HK16*HK21*HK30 + HK17*HK21*HK31 - HK20*HK22 + HK22*HK23 + HK26*HK27 - HK27*HK28 + R_ACC);
-
-            // calculate innovation variance and exit if badly conditioned
-            innovDragVar.x = (-HK13*HK21*HK24 + HK14*HK21*HK29 + HK15*HK18*HK21 - HK16*HK21*HK30 + HK17*HK21*HK31 - HK20*HK22 + HK22*HK23 + HK26*HK27 - HK27*HK28 + R_ACC);
-            if (innovDragVar.x < R_ACC) {
-                return;
-            }
-            const ftype HK32 = Kaccx / innovDragVar.x;
-
-            // Observation Jacobians
-            Hfusion[0] = -HK2*HK3;
-            Hfusion[1] = -HK3*HK4;
-            Hfusion[2] = HK3*HK5;
-            Hfusion[3] = -HK3*HK6;
-            Hfusion[4] = -HK8;
-            Hfusion[5] = -HK10;
-            Hfusion[6] = HK11*HK3;
-            Hfusion[22] = HK8;
-            Hfusion[23] = HK10;
-
-            // Kalman gains
-            // Don't allow modification of any states other than wind velocity - we only need a wind estimate.
-            // See derivation/generated/acc_bf_generated.cpp for un-implemented Kalman gain equations.
-            Kfusion[22] = -HK28*HK32;
-            Kfusion[23] = -HK20*HK32;
-
-
-        } else if (axis_index == 1) {
-            // drag can be modelled as an arbitrary combination of bluff body drag that proportional to
-            // speed squared, and rotor momentum drag that is proportional to speed.
-            ftype Kaccy; // Derivative of specific force wrt airspeed
-            if (using_mcoef && using_bcoef_y) {
-                // mixed bluff body and propeller momentum drag
-                const ftype airSpd = (bcoef_y / rho) * (- mcoef + sqrtF(sq(mcoef) + 2.0f * (rho / bcoef_y) * fabsF(mea_acc)));
-                Kaccy = fmaxF(1e-1f, (rho / bcoef_y) * airSpd + mcoef * density_ratio);
-                predAccel = (0.5f / bcoef_y) * rho * sq(rel_wind_body[1]) * dragForceSign - rel_wind_body[1] * mcoef * density_ratio;
-            } else if (using_mcoef) {
-                // propeller momentum drag only
-                Kaccy = fmaxF(1e-1f, mcoef * density_ratio);
-                predAccel = - rel_wind_body[1] * mcoef * density_ratio;
-            } else if (using_bcoef_y) {
-                // bluff body drag only
-                const ftype airSpd = sqrtF((2.0f * bcoef_y * fabsF(mea_acc)) / rho);
-                Kaccy = fmaxF(1e-1f, (rho / bcoef_y) * airSpd);
-                predAccel = (0.5f / bcoef_y) * rho * sq(rel_wind_body[1]) * dragForceSign;
-            } else {
-                // nothing more to do
-                return;
-            }
-
-            // intermediate variables
-            const ftype HK0 = ve - vwe;
-            const ftype HK1 = vn - vwn;
-            const ftype HK2 = HK0*q0 - HK1*q3 + q1*vd;
-            const ftype HK3 = 2*Kaccy;
-            const ftype HK4 = -HK0*q1 + HK1*q2 + q0*vd;
-            const ftype HK5 = HK0*q2 + HK1*q1 + q3*vd;
-            const ftype HK6 = HK0*q3 + HK1*q0 - q2*vd;
-            const ftype HK7 = q0*q3 - q1*q2;
-            const ftype HK8 = HK3*HK7;
-            const ftype HK9 = sq(q0) - sq(q1) + sq(q2) - sq(q3);
-            const ftype HK10 = HK9*Kaccy;
-            const ftype HK11 = q0*q1 + q2*q3;
-            const ftype HK12 = 2*HK11;
-            const ftype HK13 = 2*HK7;
-            const ftype HK14 = 2*HK5;
-            const ftype HK15 = 2*HK2;
-            const ftype HK16 = 2*HK4;
-            const ftype HK17 = 2*HK6;
-            const ftype HK18 = HK12*P[0][6] + HK13*P[0][22] - HK13*P[0][4] + HK14*P[0][2] + HK15*P[0][0] + HK16*P[0][1] - HK17*P[0][3] - HK9*P[0][23] + HK9*P[0][5];
-            const ftype HK19 = sq(Kaccy);
-            const ftype HK20 = HK12*P[6][6] - HK13*P[4][6] + HK13*P[6][22] + HK14*P[2][6] + HK15*P[0][6] + HK16*P[1][6] - HK17*P[3][6] + HK9*P[5][6] - HK9*P[6][23];
-            const ftype HK21 = HK13*P[4][22];
-            const ftype HK22 = HK12*P[6][22] + HK13*P[22][22] + HK14*P[2][22] + HK15*P[0][22] + HK16*P[1][22] - HK17*P[3][22] - HK21 - HK9*P[22][23] + HK9*P[5][22];
-            const ftype HK23 = HK13*HK19;
-            const ftype HK24 = HK12*P[4][6] - HK13*P[4][4] + HK14*P[2][4] + HK15*P[0][4] + HK16*P[1][4] - HK17*P[3][4] + HK21 - HK9*P[4][23] + HK9*P[4][5];
-            const ftype HK25 = HK9*P[5][23];
-            const ftype HK26 = HK12*P[5][6] - HK13*P[4][5] + HK13*P[5][22] + HK14*P[2][5] + HK15*P[0][5] + HK16*P[1][5] - HK17*P[3][5] - HK25 + HK9*P[5][5];
-            const ftype HK27 = HK19*HK9;
-            const ftype HK28 = HK12*P[6][23] + HK13*P[22][23] - HK13*P[4][23] + HK14*P[2][23] + HK15*P[0][23] + HK16*P[1][23] - HK17*P[3][23] + HK25 - HK9*P[23][23];
-            const ftype HK29 = HK12*P[2][6] + HK13*P[2][22] - HK13*P[2][4] + HK14*P[2][2] + HK15*P[0][2] + HK16*P[1][2] - HK17*P[2][3] - HK9*P[2][23] + HK9*P[2][5];
-            const ftype HK30 = HK12*P[1][6] + HK13*P[1][22] - HK13*P[1][4] + HK14*P[1][2] + HK15*P[0][1] + HK16*P[1][1] - HK17*P[1][3] - HK9*P[1][23] + HK9*P[1][5];
-            const ftype HK31 = HK12*P[3][6] + HK13*P[3][22] - HK13*P[3][4] + HK14*P[2][3] + HK15*P[0][3] + HK16*P[1][3] - HK17*P[3][3] - HK9*P[3][23] + HK9*P[3][5];
-            // const ftype HK32 = Kaccy/(HK12*HK19*HK20 + HK14*HK19*HK29 + HK15*HK18*HK19 + HK16*HK19*HK30 - HK17*HK19*HK31 + HK22*HK23 - HK23*HK24 + HK26*HK27 - HK27*HK28 + R_ACC);
-
-            innovDragVar.y = (HK12*HK19*HK20 + HK14*HK19*HK29 + HK15*HK18*HK19 + HK16*HK19*HK30 - HK17*HK19*HK31 + HK22*HK23 - HK23*HK24 + HK26*HK27 - HK27*HK28 + R_ACC);
-            if (innovDragVar.y < R_ACC) {
-                // calculation is badly conditioned
-                return;
-            }
-            const ftype HK32 = Kaccy / innovDragVar.y;
-
-            // Observation Jacobians
-            Hfusion[0] = -HK2*HK3;
-            Hfusion[1] = -HK3*HK4;
-            Hfusion[2] = -HK3*HK5;
-            Hfusion[3] = HK3*HK6;
-            Hfusion[4] = HK8;
-            Hfusion[5] = -HK10;
-            Hfusion[6] = -HK11*HK3;
-            Hfusion[22] = -HK8;
-            Hfusion[23] = HK10;
-
-            // Kalman gains
-            // Don't allow modification of any states other than wind velocity at this stage of development - we only need a wind estimate.
-            // See derivation/generated/acc_bf_generated.cpp for un-implemented Kalman gain equations.
-            Kfusion[22] = -HK22*HK32;
-            Kfusion[23] = -HK28*HK32;
+        // drag can be modelled as an arbitrary  combination of bluff body drag that proportional to
+        // speed squared, and rotor momentum drag that is proportional to speed.
+        Rate Kacc; // Derivative of specific force wrt airspeed
+        const Rate min_Kacc = 1e-1f * (mp_units::one / second);
+        if (using_mcoef && using_bcoef) {
+            // mixed bluff body and propeller momentum drag
+            const Velocity airSpd = (bcoef / rho) * (- mcoef + sqrtF((mcoef * mcoef + 2.0f * (rho / bcoef) * (fabsF(mea_acc.numerical_value_in(acceleration)) * acceleration)).numerical_value_in(mp_units::one / (second * second))) * (mp_units::one / second));
+            Kacc = max(min_Kacc, Rate{(rho / bcoef) * airSpd + mcoef * density_ratio});
+            predAccel = (0.5f / bcoef) * rho * rel_wind * rel_wind * dragForceSign - rel_wind * mcoef * density_ratio;
+        } else if (using_mcoef) {
+            // propeller momentum drag only
+            Kacc = max(min_Kacc, Rate{mcoef * density_ratio});
+            predAccel = - rel_wind * mcoef * density_ratio;
+        } else if (using_bcoef) {
+            // bluff body drag only
+            const Velocity airSpd = sqrtF(((2.0f * bcoef * (fabsF(mea_acc.numerical_value_in(acceleration)) * acceleration)) / rho).numerical_value_in(metre_per_second * metre_per_second)) * metre_per_second;
+            Kacc = max(min_Kacc, Rate{(rho / bcoef) * airSpd});
+            predAccel = (0.5f / bcoef) * rho * rel_wind * rel_wind * dragForceSign;
+        } else if (axis_index == 0) {
+            // skip this axis
+            continue;
+        } else {
+            // nothing more to do
+            return;
         }
 
-        innovDrag[axis_index] = predAccel - mea_acc;
+        // Observation Jacobians
+        ObservationModel<Acceleration> Hfusion{};
+        if (axis_index == 0) {
+            const Velocity HK0 = vn - vwn;
+            const Velocity HK1 = ve - vwe;
+            const Velocity HK2 = HK0*q0 + HK1*q3 - q2*vd;
+            const Velocity HK4 = HK0*q1 + HK1*q2 + q3*vd;
+            const Velocity HK5 = HK0*q2 - HK1*q1 + q0*vd;
+            const Velocity HK6 = -HK0*q3 + HK1*q0 + q1*vd;
+            const Unitless HK7 = q0*q0 + q1*q1 - q2*q2 - q3*q3;
+            const Unitless HK9 = q0*q3 + q1*q2;
+            const Unitless HK11 = q0*q2 - q1*q3;
+            Hfusion.at<0>(-2*Kacc*HK2);
+            Hfusion.at<1>(-2*Kacc*HK4);
+            Hfusion.at<2>(2*Kacc*HK5);
+            Hfusion.at<3>(-2*Kacc*HK6);
+            Hfusion.at<4>(-Kacc*HK7);
+            Hfusion.at<5>(-2*Kacc*HK9);
+            Hfusion.at<6>(2*Kacc*HK11);
+            Hfusion.at<22>(Kacc*HK7);
+            Hfusion.at<23>(2*Kacc*HK9);
+        } else {
+            const Velocity HK0 = ve - vwe;
+            const Velocity HK1 = vn - vwn;
+            const Velocity HK2 = HK0*q0 - HK1*q3 + q1*vd;
+            const Velocity HK4 = -HK0*q1 + HK1*q2 + q0*vd;
+            const Velocity HK5 = HK0*q2 + HK1*q1 + q3*vd;
+            const Velocity HK6 = HK0*q3 + HK1*q0 - q2*vd;
+            const Unitless HK7 = q0*q3 - q1*q2;
+            const Unitless HK9 = q0*q0 - q1*q1 + q2*q2 - q3*q3;
+            const Unitless HK11 = q0*q1 + q2*q3;
+            Hfusion.at<0>(-2*Kacc*HK2);
+            Hfusion.at<1>(-2*Kacc*HK4);
+            Hfusion.at<2>(-2*Kacc*HK5);
+            Hfusion.at<3>(2*Kacc*HK6);
+            Hfusion.at<4>(2*Kacc*HK7);
+            Hfusion.at<5>(-Kacc*HK9);
+            Hfusion.at<6>(-2*Kacc*HK11);
+            Hfusion.at<22>(-2*Kacc*HK7);
+            Hfusion.at<23>(Kacc*HK9);
+        }
+
+        // calculate innovation variance and exit if badly conditioned
+        const auto PHt = covariance * fcarouge::transposed(Hfusion);
+        const auto S = (Hfusion * PHt).at() + R_ACC;
+        innovDragVar[axis_index] = S.numerical_value_in(acceleration * acceleration);
+        if (S < R_ACC) {
+            return;
+        }
+
+        // Kalman gains
+        // Don't allow modification of any states other than wind velocity - we only need a wind estimate.
+        // See derivation/generated/acc_bf_generated.cpp for un-implemented Kalman gain equations.
+        const auto K = PHt / S;
+        Kfusion[22] = K.data()(22);
+        Kfusion[23] = K.data()(23);
+
+        innovDrag[axis_index] = (predAccel - mea_acc).numerical_value_in(acceleration);
         dragTestRatio[axis_index] = sq(innovDrag[axis_index]) / (25.0f * innovDragVar[axis_index]);
 
         // if the innovation consistency check fails then don't fuse the sample
@@ -601,23 +507,13 @@ void NavEKF3_core::FuseDragForces()
             return;
         }
 
-        // correct the covariance P = (I - K*H)*P = P - K*H*P. take advantage of
-        // the zero elements of H to reduce the number of operations.
+        // correct the covariance P = (I - K*H)*P = P - K*H*P. K*H*P is written to its
+        // array, its type checked against the covariance without being evaluated.
+        const auto HP = Hfusion * covariance;
+        static_assert(std::is_convertible_v<decltype(K * HP), Covariance>);
         for (unsigned i = 0; i<=stateIndexLim; i++) {
-            // j as the inner loop allows the compiler to hoist the KH product
-            // to save computation, and do the inner indexing more efficiently.
             for (unsigned j = 0; j<=stateIndexLim; j++) {
-                ftype res = 0;
-                res += (Kfusion[i] * Hfusion[0]) * P[0][j];
-                res += (Kfusion[i] * Hfusion[1]) * P[1][j];
-                res += (Kfusion[i] * Hfusion[2]) * P[2][j];
-                res += (Kfusion[i] * Hfusion[3]) * P[3][j];
-                res += (Kfusion[i] * Hfusion[4]) * P[4][j];
-                res += (Kfusion[i] * Hfusion[5]) * P[5][j];
-                res += (Kfusion[i] * Hfusion[6]) * P[6][j];
-                res += (Kfusion[i] * Hfusion[22]) * P[22][j];
-                res += (Kfusion[i] * Hfusion[23]) * P[23][j];
-                KHP[i][j] = res;
+                KHP[i][j] = Kfusion[i] * HP.data()(j);
             }
         }
 

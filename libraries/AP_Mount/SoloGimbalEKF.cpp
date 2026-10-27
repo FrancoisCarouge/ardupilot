@@ -17,6 +17,53 @@
 #include <AP_NavEKF/AP_Nav_Common.h>
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_Compass/AP_Compass.h>
+#include <AP_LinearAlgebra/AP_LinearAlgebra.h>
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Units.h>
+
+namespace {
+
+template <auto Reference>
+using Quantity = AP_LinearAlgebra::Units::Quantity<Reference>;
+using Angle = Quantity<mp_units::si::radian>;
+using Velocity = Quantity<mp_units::si::metre / mp_units::si::second>;
+using VelocityVariance = Quantity<(mp_units::si::metre / mp_units::si::second) * (mp_units::si::metre / mp_units::si::second)>;
+using AngleVariance = Quantity<mp_units::si::radian * mp_units::si::radian>;
+
+// the 9 states: angle error (rad), NED velocity (m/s), delta angle bias (rad)
+using State = AP_LinearAlgebra::ColumnVector<float,
+      Angle, Angle, Angle,
+      Velocity, Velocity, Velocity,
+      Angle, Angle, Angle>;
+using Covariance = decltype(State{} * fcarouge::transposed(State{}));
+using CovarianceView = AP_LinearAlgebra::TypedView<Covariance>;
+template <typename Observation>
+using ObservationModel = decltype(AP_LinearAlgebra::ColumnVector<float, Observation> {} / State{});
+
+/*
+  a direct observation of the state at index: the gains K = P H'/S and the
+  row H P of the covariance correction
+ */
+template <unsigned index>
+void direct_observation(const float *covariance_array, const VelocityVariance &R, float *K_array, float *HP_array)
+{
+    const CovarianceView covariance{AP_LinearAlgebra::MatrixView<float, 9, 9>{covariance_array}};
+    ObservationModel<Velocity> H{};
+    H.template at<index>(1.0f * mp_units::one);
+    // P*H' and H*P are the column and row of the observed state
+    const decltype(covariance * fcarouge::transposed(H)) PHt{AP_LinearAlgebra::column<index>(covariance)};
+    // the innovation variance from the observed state's variance: a product of H with P*H' would
+    // multiply the whole column by H's zeros
+    const auto S = PHt.template at<index>() + R;
+    const auto K = PHt / S;
+    const decltype(H * covariance) HP{AP_LinearAlgebra::row<index>(covariance)};
+    static_assert(std::is_convertible_v<decltype(K * HP), Covariance>);
+    for (uint8_t i = 0; i < 9; i++) {
+        K_array[i] = K.data()(i);
+        HP_array[i] = HP.data()(i);
+    }
+}
+
+} // namespace
 
 #include <stdio.h>
 
@@ -606,15 +653,12 @@ void SoloGimbalEKF::fuseVelocity()
         return;
     }
 
-    float R_OBS = 0.25f;
+    const VelocityVariance R_OBS = 0.25f * VelocityVariance::reference;
     float innovation[3];
-    float varInnov[3];
     Vector3f angErrVec;
-    uint8_t stateIndex;
     float K[9];
     // Fuse measurements sequentially
     for (uint8_t obsIndex=0;obsIndex<=2;obsIndex++) {
-        stateIndex = 3 + obsIndex;
 
         // Calculate the velocity measurement innovation using the SoloGimbalEKF estimate as the observation
         // if heading isn't aligned, use zero velocity (static assumption)
@@ -635,11 +679,21 @@ void SoloGimbalEKF::fuseVelocity()
 
         // Zero the attitude error states - they represent the incremental error so must be zero before corrections are applied
         state.angErr.zero();
-        // Calculate the innovation variance
-        varInnov[obsIndex] = Cov[stateIndex][stateIndex] + R_OBS;
-        // Calculate the Kalman gain and correct states, taking advantage of direct state observation
+        // Calculate the Kalman gain and the covariance correction row
+        float HP[9];
+        switch (obsIndex) {
+        case 0:
+            direct_observation<3>(&Cov[0][0], R_OBS, K, HP);
+            break;
+        case 1:
+            direct_observation<4>(&Cov[0][0], R_OBS, K, HP);
+            break;
+        default:
+            direct_observation<5>(&Cov[0][0], R_OBS, K, HP);
+            break;
+        }
+        // correct states
         for (uint8_t rowIndex=0;rowIndex<=8;rowIndex++) {
-            K[rowIndex] = Cov[rowIndex][stateIndex]/varInnov[obsIndex];
             states[rowIndex] -= K[rowIndex] * innovation[obsIndex];
         }
 
@@ -653,10 +707,11 @@ void SoloGimbalEKF::fuseVelocity()
         // re-normalise the quaternion
         state.quat.normalize();
 
-        // Update the covariance
+        // Update the covariance, P = P - K*H*P, H*P the row of the observed state
+        // taken before the correction
         for (uint8_t rowIndex=0;rowIndex<=8;rowIndex++) {
             for (uint8_t colIndex=0;colIndex<=8;colIndex++) {
-                Cov[rowIndex][colIndex] = Cov[rowIndex][colIndex] - K[rowIndex]*Cov[stateIndex][colIndex];
+                Cov[rowIndex][colIndex] -= K[rowIndex]*HP[colIndex];
             }
         }
 
@@ -701,7 +756,7 @@ void SoloGimbalEKF::fuseCompass()
     float magY = magData.y;
     float magZ = magData.z;
 
-    const float R_MAG = 3e-2f;
+    const AngleVariance R_MAG = 3e-2f * AngleVariance::reference;
 
     // Calculate observation Jacobian
     float t5695 = sq(q0);
@@ -775,24 +830,21 @@ void SoloGimbalEKF::fuseCompass()
     H_MAG[1] =  t5761*(t5742*(magZ*(cosPhi*cosTheta*t5711-cosPhi*sinTheta*t5715)+magY*(t5711*t5713+t5710*t5715)+magX*(t5711*t5719+t5715*t5722))+t5758*t5762*(magZ*(cosPhi*cosTheta*t5699+cosPhi*sinTheta*t5704)+magY*(t5699*t5713-t5704*t5710)+magX*(t5699*t5719-t5704*t5722)));
     H_MAG[2] =  t5761*(t5742*(-magZ*(sinPhi*t5711+cosPhi*sinTheta*t5716)+magY*(t5710*t5716-cosPhi*cosPsi*t5711)+magX*(t5716*t5722+cosPhi*sinPsi*t5711))-t5758*t5762*(magZ*(sinPhi*t5699-cosPhi*sinTheta*t5706)+magY*(t5706*t5710+cosPhi*t5699*cosPsi)+magX*(t5706*t5722-cosPhi*t5699*sinPsi)));
 
-    // Calculate innovation variance and Kalman gains, taking advantage of the fact that only the first 3 elements in H are non zero
-    float PH[3];
-    float varInnov = R_MAG;
-    for (uint8_t rowIndex=0;rowIndex<=2;rowIndex++) {
-        PH[rowIndex] = 0.0f;
-        for (uint8_t colIndex=0;colIndex<=2;colIndex++) {
-            PH[rowIndex] += Cov[rowIndex][colIndex]*H_MAG[colIndex];
-        }
-        varInnov += H_MAG[rowIndex]*PH[rowIndex];
-    }
+    // the observation is a heading, in rad, observed through the angle error states: the Jacobian
+    // elements are dimensionless
+    ObservationModel<Angle> H{};
+    H.at<0>(H_MAG[0] * mp_units::one);
+    H.at<1>(H_MAG[1] * mp_units::one);
+    H.at<2>(H_MAG[2] * mp_units::one);
+
+    // Calculate innovation variance and Kalman gains
+    const CovarianceView covariance{AP_LinearAlgebra::MatrixView<float, 9, 9>{&Cov[0][0]}};
+    const auto PHt = covariance * fcarouge::transposed(H);
+    const auto varInnov = (H * PHt).at() + R_MAG;
+    const auto K = PHt / varInnov;
     float K_MAG[9];
-    float varInnovInv = 1.0f / varInnov;
     for (uint8_t rowIndex=0;rowIndex<=8;rowIndex++) {
-        K_MAG[rowIndex] = 0.0f;
-        for (uint8_t colIndex=0;colIndex<=2;colIndex++) {
-            K_MAG[rowIndex] += Cov[rowIndex][colIndex]*H_MAG[colIndex];
-        }
-        K_MAG[rowIndex] *= varInnovInv;
+        K_MAG[rowIndex] = K.data()(rowIndex);
     }
 
     // Calculate the innovation
@@ -818,13 +870,13 @@ void SoloGimbalEKF::fuseCompass()
     // re-normalise the quaternion
     state.quat.normalize();
 
-    // correct the covariance using P = P - K*H*P taking advantage of the fact that only the first 3 elements in H are non zero
+    // correct the covariance using P = P - K*H*P, K*H*P written to the array, its type checked
+    // against the covariance without being evaluated
+    const auto HP_typed = H * covariance;
+    static_assert(std::is_convertible_v<decltype(K * HP_typed), Covariance>);
     float HP[9];
     for (uint8_t colIndex=0;colIndex<=8;colIndex++) {
-        HP[colIndex] = 0.0f;
-        for (uint8_t rowIndex=0;rowIndex<=2;rowIndex++) {
-            HP[colIndex] += H_MAG[rowIndex]*Cov[rowIndex][colIndex];
-        }
+        HP[colIndex] = HP_typed.data()(colIndex);
     }
     for (uint8_t rowIndex=0;rowIndex<=8;rowIndex++) {
         for (uint8_t colIndex=0;colIndex<=8;colIndex++) {
@@ -926,7 +978,7 @@ void SoloGimbalEKF::fixCovariance()
     }
 
     // constrain diagonals to be non-negative
-    for (uint8_t index=1; index<=8; index++) {
+    for (uint8_t index=0; index<=8; index++) {
         if (Cov[index][index] < 0.0f) {
             Cov[index][index] = 0.0f;
         }
