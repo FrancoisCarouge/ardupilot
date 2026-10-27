@@ -57,7 +57,9 @@ auto make_filter()
         input_control{[](const Seconds &, const MetresPerSecond &) -> InputControl {
             return InputControl{0.0f * second, 1.0f * mp_units::one};
         }},
-        prediction_types<Seconds, MetresPerSecond>};
+        prediction_types<Seconds, MetresPerSecond>,
+        // the covariance corrected as (I - K H) P, as the original
+        simple_form};
 }
 
 } // namespace
