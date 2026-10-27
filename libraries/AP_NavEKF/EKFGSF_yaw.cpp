@@ -91,7 +91,9 @@ auto make_filter()
         observation{[](const State &x) -> Output {
             return Output{x.at<0>(), x.at<1>()};
         }},
-        prediction_types<Velocity, Velocity>};
+        prediction_types<Velocity, Velocity>,
+        // the covariance corrected as P - K S K', as the original
+        symmetric_form};
 }
 
 // Applies the lower limit of the variances and forces symmetry on a covariance matrix
