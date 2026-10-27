@@ -25,8 +25,10 @@ ftype direct_observation(const ftype *covariance_array, const Observation &R_uni
     H.template at<index>(ftype(1) * mp_units::one);
     // P*H' and H*P are the column and row of the observed state
     const decltype(covariance * fcarouge::transposed(H)) PHt{AP_LinearAlgebra::column<index>(covariance)};
-    const auto S = (H * PHt).at() + R * (R_unit * R_unit);
-    const auto K = PHt / S;
+    // the innovation variance from the observed state's variance, and the gain from its reciprocal, as
+    // the original: a product of H with P*H' would multiply the whole column by H's zeros
+    const auto S = PHt.template at<index>() + R * (R_unit * R_unit);
+    const auto K = PHt * (ftype(1) / S);
     for (auto i=0; i<24; i++) {
         ftype res = 0;
         if (kalman_mask & (1<<i)) {
