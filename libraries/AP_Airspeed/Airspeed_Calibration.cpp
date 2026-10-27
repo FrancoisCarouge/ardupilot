@@ -98,7 +98,9 @@ auto make_filter()
                                            ay.numerical_value_in(metre_per_second),
                                            vg_z.numerical_value_in(metre_per_second)) * metre_per_second};
         }},
-        update_types<MetresPerSecond, MetresPerSecond, MetresPerSecond>};
+        update_types<MetresPerSecond, MetresPerSecond, MetresPerSecond>,
+        // the covariance corrected as P - K H P
+        simple_form};
 }
 
 } // namespace
