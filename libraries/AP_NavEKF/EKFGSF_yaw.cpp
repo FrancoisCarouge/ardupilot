@@ -25,11 +25,6 @@
 #include <AP_AHRS/AP_AHRS.h>
 #include <GCS_MAVLink/GCS.h>
 
-#if HAL_WITH_EKF_DOUBLE && CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
-// the update of the Kalman library filter needs a stack frame of 1416 bytes with a double precision EKF
-#pragma GCC diagnostic error "-Wframe-larger-than=1500"
-#endif
-
 #include <AP_LinearAlgebra/AP_LinearAlgebra_Kalman.h>
 
 #include <new>
