@@ -65,7 +65,11 @@ auto make_filter()
             return Output{x.at<0>() * gaussian(x, px, py)};
         }},
         update_types<Metres, Metres>,
-        prediction_types<Metres, Metres>};
+        prediction_types<Metres, Metres>,
+        // the covariance corrected as P - K H P and made symmetric again, as
+        // the original
+        simple_form,
+        symmetrize};
 }
 
 } // namespace
