@@ -51,7 +51,9 @@ void direct_observation(const float *covariance_array, const VelocityVariance &R
     H.template at<index>(1.0f * mp_units::one);
     // P*H' and H*P are the column and row of the observed state
     const decltype(covariance * fcarouge::transposed(H)) PHt{AP_LinearAlgebra::column<index>(covariance)};
-    const auto S = (H * PHt).at() + R;
+    // the innovation variance from the observed state's variance: a product of H with P*H' would
+    // multiply the whole column by H's zeros
+    const auto S = PHt.template at<index>() + R;
     const auto K = PHt / S;
     const decltype(H * covariance) HP{AP_LinearAlgebra::row<index>(covariance)};
     static_assert(std::is_convertible_v<decltype(K * HP), Covariance>);
