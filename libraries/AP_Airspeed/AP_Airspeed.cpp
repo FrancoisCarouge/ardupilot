@@ -56,6 +56,7 @@
 #include "AP_Airspeed_External.h"
 #include "AP_Airspeed_Scripting.h"
 #include "AP_Airspeed_SITL.h"
+#include "Airspeed_Calibration.h"
 extern const AP_HAL::HAL &hal;
 
 #include <AP_Vehicle/AP_FixedWing.h>
@@ -368,6 +369,14 @@ void AP_Airspeed::allocate()
         return;
     }
 
+#if AP_AIRSPEED_AUTOCAL_ENABLE
+    for (uint8_t i=0; i<AIRSPEED_MAX_SENSORS; i++) {
+        if (state[i].calibration == nullptr) {
+            state[i].calibration = NEW_NOTHROW Airspeed_Calibration();
+        }
+    }
+#endif
+
 #ifdef HAL_AIRSPEED_PROBE_LIST
     // load sensors via a list from hwdef.dat
     HAL_AIRSPEED_PROBE_LIST;
@@ -375,7 +384,9 @@ void AP_Airspeed::allocate()
     // look for sensors based on type parameters
     for (uint8_t i=0; i<AIRSPEED_MAX_SENSORS; i++) {
 #if AP_AIRSPEED_AUTOCAL_ENABLE
-        state[i].calibration.init(param[i].ratio);
+        if (state[i].calibration != nullptr) {
+            state[i].calibration->init(param[i].ratio.get() * Airspeed_Calibration::Ratio::reference);
+        }
         state[i].last_saved_ratio = param[i].ratio;
 #endif
 

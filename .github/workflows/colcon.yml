@@ -168,6 +168,7 @@ jobs:
         with:
           submodules: 'recursive'
           path: src/ardupilot
+      - uses: ./.github/actions/setup-cxx26
       - uses: ./.github/actions/setup-ccache
         with:
           key-suffix: ros

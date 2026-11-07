@@ -186,6 +186,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: 'recursive'
+      - uses: ./.github/actions/setup-cxx26
       - uses: ./.github/actions/setup-ccache
         with:
           key-suffix: base

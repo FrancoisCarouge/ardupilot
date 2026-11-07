@@ -22,6 +22,13 @@ idf_build_process(esp32s3
                app_update
                esp_adc
                esp_driver_mcpwm
+               esp_driver_rmt
+               esp_driver_gpio
+               esp_driver_uart
+               esp_driver_spi
+               esp_driver_sdmmc
+               esp_driver_sdspi
+               esp_ringbuf
                driver
                lwip
                esp_wifi
@@ -109,12 +116,20 @@ target_link_libraries(${elf_file}
                 idf::app_update
                 idf::esp_adc
                 idf::esp_driver_mcpwm
+                idf::esp_driver_rmt
+                idf::esp_driver_gpio
+                idf::esp_driver_uart
+                idf::esp_driver_spi
+                idf::esp_driver_sdmmc
+                idf::esp_driver_sdspi
+                idf::esp_ringbuf
                 idf::driver
                 idf::lwip
                 idf::esp_wifi
                 idf::esp_system
                 idf::esp_rom
                 idf::esp_timer
+                idf::esp_hal_wdt
                 )
 
 # Attach additional targets to the executable file for flashing,

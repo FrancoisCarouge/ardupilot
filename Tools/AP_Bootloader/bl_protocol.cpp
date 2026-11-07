@@ -173,7 +173,7 @@ static void sys_tick_handler(virtual_timer_t* vt, void *ctx)
     uint8_t i;
     for (i = 0; i < NTIMERS; i++)
         if (timer[i] > 0) {
-            timer[i]--;
+            timer[i] = timer[i] - 1;
         }
 
     if ((led_state == LED_BLINK) && (timer[TIMER_LED] == 0)) {

@@ -1,5 +1,6 @@
 #include "AP_NavEKF3.h"
 #include "AP_NavEKF3_core.h"
+#include "AP_NavEKF3_typed.h"
 
 #if EK3_FEATURE_BEACON_FUSION
 
@@ -134,48 +135,33 @@ void NavEKF3_core::FuseRngBcn()
     // perform fusion of range measurement
     if (rngPred > 0.1f)
     {
-        // calculate observation jacobians
-        ftype H_BCN[24];
-        memset(H_BCN, 0, sizeof(H_BCN));
-        ftype t2 = bcn_pd-pd;
-        ftype t3 = bcn_pe-pe;
-        ftype t4 = bcn_pn-pn;
-        ftype t5 = t2*t2;
-        ftype t6 = t3*t3;
-        ftype t7 = t4*t4;
-        ftype t8 = t5+t6+t7;
-        ftype t9 = 1.0f/sqrtF(t8);
-        H_BCN[7] = -t4*t9;
-        H_BCN[8] = -t3*t9;
+        using namespace NavEKF3_typed;
+        constexpr auto metre = mp_units::si::metre;
+        const Quantity<square(metre)> R_BCN_typed = R_BCN * square(metre);
+
+        // calculate observation jacobians, from the beacon to the vehicle
+        const Position dn = (bcn_pn - pn) * metre;
+        const Position de = (bcn_pe - pe) * metre;
+        Position dd = (bcn_pd - pd) * metre;
+        const auto invRange = ftype(1) / (sqrtF(sq(bcn_pn - pn) + sq(bcn_pe - pe) + sq(bcn_pd - pd)) * metre);
         // If we are not using the beacons as a height reference, we pretend that the beacons
         // are at the same height as the flight vehicle when calculating the observation derivatives
         // and Kalman gains
         // TODO  - less hacky way of achieving this, preferably using an alternative derivation
         if (activeHgtSource != AP_NavEKF_Source::SourceZ::BEACON) {
-            t2 = 0.0f;
+            dd = ftype(0) * metre;
         }
-        H_BCN[9] = -t2*t9;
+        ObservationModel<Position> H_BCN{};
+        H_BCN.at<7>(-dn * invRange);
+        H_BCN.at<8>(-de * invRange);
+        H_BCN.at<9>(-dd * invRange);
 
-        // calculate Kalman gains
-        ftype t10 = P[9][9]*t2*t9;
-        ftype t11 = P[8][9]*t3*t9;
-        ftype t12 = P[7][9]*t4*t9;
-        ftype t13 = t10+t11+t12;
-        ftype t14 = t2*t9*t13;
-        ftype t15 = P[9][8]*t2*t9;
-        ftype t16 = P[8][8]*t3*t9;
-        ftype t17 = P[7][8]*t4*t9;
-        ftype t18 = t15+t16+t17;
-        ftype t19 = t3*t9*t18;
-        ftype t20 = P[9][7]*t2*t9;
-        ftype t21 = P[8][7]*t3*t9;
-        ftype t22 = P[7][7]*t4*t9;
-        ftype t23 = t20+t21+t22;
-        ftype t24 = t4*t9*t23;
-        rngBcn.varInnov = R_BCN+t14+t19+t24;
-        ftype t26;
-        if (rngBcn.varInnov >= R_BCN) {
-            t26 = 1.0f/rngBcn.varInnov;
+        // calculate the innovation variance
+        const CovarianceView covariance{AP_LinearAlgebra::MatrixView<ftype, 24, 24>{&P[0][0]}};
+        const auto PHt = covariance * fcarouge::transposed(H_BCN);
+        const auto varInnov = (H_BCN * PHt).at() + R_BCN_typed;
+        rngBcn.varInnov = varInnov.numerical_value_in(square(metre));
+        if (varInnov >= R_BCN_typed) {
             faultStatus.bad_rngbcn = false;
         } else {
             // the calculation is badly conditioned, so we cannot perform fusion on this step
@@ -185,17 +171,10 @@ void NavEKF3_core::FuseRngBcn()
             return;
         }
 
-        Kfusion[0] = -t26*(P[0][7]*t4*t9+P[0][8]*t3*t9+P[0][9]*t2*t9);
-        Kfusion[1] = -t26*(P[1][7]*t4*t9+P[1][8]*t3*t9+P[1][9]*t2*t9);
-        Kfusion[2] = -t26*(P[2][7]*t4*t9+P[2][8]*t3*t9+P[2][9]*t2*t9);
-        Kfusion[3] = -t26*(P[3][7]*t4*t9+P[3][8]*t3*t9+P[3][9]*t2*t9);
-        Kfusion[4] = -t26*(P[4][7]*t4*t9+P[4][8]*t3*t9+P[4][9]*t2*t9);
-        Kfusion[5] = -t26*(P[5][7]*t4*t9+P[5][8]*t3*t9+P[5][9]*t2*t9);
-        Kfusion[7] = -t26*(t22+P[7][8]*t3*t9+P[7][9]*t2*t9);
-        Kfusion[8] = -t26*(t16+P[8][7]*t4*t9+P[8][9]*t2*t9);
-
-        // values to calculate in Kfusion (others are set to zero, indices 0-9 ignored)
-        uint32_t kalman_mask = 0;
+        // calculate Kalman gains: always for the quaternion and the horizontal velocity and position,
+        // for the other states when not inhibited
+        const auto K = PHt / varInnov;
+        uint32_t kalman_mask = (1<<0) | (1<<1) | (1<<2) | (1<<3) | (1<<4) | (1<<5) | (1<<7) | (1<<8);
 
         if (!inhibitDelAngBiasStates) {
             kalman_mask |= (1<<10) | (1<<11) | (1<<12);
@@ -212,11 +191,7 @@ void NavEKF3_core::FuseRngBcn()
 
         // only allow the range observations to modify the vertical states if we are using it as a height reference
         if (activeHgtSource == AP_NavEKF_Source::SourceZ::BEACON) {
-            Kfusion[6] = -t26*(P[6][7]*t4*t9+P[6][8]*t3*t9+P[6][9]*t2*t9);
-            Kfusion[9] = -t26*(t10+P[9][7]*t4*t9+P[9][8]*t3*t9);
-        } else {
-            Kfusion[6] = 0.0f;
-            Kfusion[9] = 0.0f;
+            kalman_mask |= (1<<6) | (1<<9);
         }
 
         if (!inhibitMagStates) {
@@ -227,10 +202,10 @@ void NavEKF3_core::FuseRngBcn()
             kalman_mask |= (1<<22) | (1<<23);
         }
 
-        for (auto i=10; i<24; i++) { // 0-9 are already computed
+        for (auto i=0; i<24; i++) {
             ftype res = 0;
             if (kalman_mask & (1<<i)) {
-                res = -t26*(P[i][7]*t4*t9+P[i][8]*t3*t9+P[i][9]*t2*t9);
+                res = K.data()(i);
             }
             Kfusion[i] = res;
         }
@@ -250,17 +225,13 @@ void NavEKF3_core::FuseRngBcn()
             // restart the counter
             rngBcn.lastPassTime_ms = imuSampleTime_ms;
 
-            // correct the covariance P = (I - K*H)*P = P - K*H*P. take advantage of
-            // the zero elements of H to reduce the number of operations.
+            // correct the covariance P = (I - K*H)*P = P - K*H*P. K*H*P is written to its
+            // array, its type checked against the covariance without being evaluated.
+            const auto HP = H_BCN * covariance;
+            static_assert(std::is_convertible_v<decltype(K * HP), Covariance>);
             for (unsigned i = 0; i<=stateIndexLim; i++) {
-                // j as the inner loop allows the compiler to hoist the KH product
-                // to save computation, and do the inner indexing more efficiently.
                 for (unsigned j = 0; j<=stateIndexLim; j++) {
-                    ftype res = 0;
-                    res += (Kfusion[i] * H_BCN[7]) * P[7][j];
-                    res += (Kfusion[i] * H_BCN[8]) * P[8][j];
-                    res += (Kfusion[i] * H_BCN[9]) * P[9][j];
-                    KHP[i][j] = res;
+                    KHP[i][j] = Kfusion[i] * HP.data()(j);
                 }
             }
 

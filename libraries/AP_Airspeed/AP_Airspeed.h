@@ -56,26 +56,9 @@ public:
 };
 
 
-class Airspeed_Calibration {
-public:
-    friend class AP_Airspeed;
-    // constructor
-    Airspeed_Calibration();
-
-    // initialise the calibration
-    void init(float initial_ratio);
-
-    // take current airspeed in m/s and ground speed vector and return
-    // new scaling factor
-    float update(float airspeed, const Vector3f &vg, int16_t max_airspeed_allowed_during_cal);
-
-private:
-    // state of kalman filter for airspeed ratio estimation
-    Matrix3f P; // covariance matrix
-    const float Q0; // process noise matrix top left and middle element
-    const float Q1; // process noise matrix bottom right element
-    Vector3f state; // state vector
-};
+// in flight airspeed ratio calibration, held by pointer: its header brings
+// the unit types, see Airspeed_Calibration.h
+class Airspeed_Calibration;
 
 class AP_Airspeed
 {
@@ -313,8 +296,8 @@ private:
         } cal;
 
 #if AP_AIRSPEED_AUTOCAL_ENABLE
-        // In flight ratio calibration
-        Airspeed_Calibration calibration;
+        // In flight ratio calibration, allocated by init()
+        Airspeed_Calibration *calibration = nullptr;
         float last_saved_ratio;
         uint8_t counter;
 #endif // AP_AIRSPEED_AUTOCAL_ENABLE

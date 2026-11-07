@@ -19,7 +19,7 @@ endif
 
 # C++ specific options here (added to USE_OPT).
 ifeq ($(USE_CPPOPT),)
-  USE_CPPOPT = -fno-rtti -std=gnu++11
+  USE_CPPOPT = -fno-rtti -std=gnu++26
 endif
 
 # Assembly specific options here (added to USE_OPT).
@@ -223,7 +223,7 @@ AOPT =
 TOPT = -mthumb -DTHUMB
 
 # Define C warning options here
-CWARN = -Wall -Wextra -Wundef -Wstrict-prototypes -Werror
+CWARN = -Wall -Wextra -Wundef -Wstrict-prototypes -Werror -Wno-error=address
 
 # Define C++ warning options here
 CPPWARN = -Wall -Wextra -Wundef -Werror

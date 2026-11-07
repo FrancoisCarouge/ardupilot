@@ -28,9 +28,11 @@
 #include <AP_Notify/AP_Notify.h>
 #include "AP_InertialSensor.h"
 
+#include <AP_LinearAlgebra/AP_LinearAlgebra.h>
+#include <AP_LinearAlgebra/AP_LinearAlgebra_Units.h>
+
 // this scale factor ensures params are easy to work with in GUI parameter editors
 #define SCALE_FACTOR 1.0e6
-#define INV_SCALE_FACTOR 1.0e-6
 #define TEMP_RANGE_MIN 10
 
 // timeout calibration after 10 minutes, if no temperature rise
@@ -44,6 +46,49 @@
 #define TEMP_REFERENCE 35.0
 
 extern const AP_HAL::HAL& hal;
+
+namespace {
+
+/*
+  the correction of an accelerometer, in m/s/s, or of a gyroscope, in rad/s:
+  the units of the coefficients, unit/K, unit/K^2 and unit/K^3, are checked
+  against the powers of the temperature difference at compile time
+ */
+constexpr auto kelvin = mp_units::si::kelvin;
+constexpr auto accel_unit = mp_units::si::metre / (mp_units::si::second * mp_units::si::second);
+constexpr auto gyro_unit = mp_units::si::radian / mp_units::si::second;
+
+template <auto Reference>
+using Quantity = mp_units::quantity<Reference, float>;
+
+// the powers of the temperature difference
+using Powers = AP_LinearAlgebra::ColumnVector<float, Quantity<kelvin>, Quantity<pow<2>(kelvin)>, Quantity<pow<3>(kelvin)>>;
+
+template <auto Unit>
+Vector3f evaluate(float tdiff, const AP_Vector3f coeff[3])
+{
+    // the parameters hold the coefficients scaled by SCALE_FACTOR, 1e6
+    constexpr auto scaled_unit = mp_units::mag_power<10, -6> * Unit;
+    // the correction of each axis
+    using Correction = AP_LinearAlgebra::ColumnVector<float, Quantity<scaled_unit>, Quantity<scaled_unit>, Quantity<scaled_unit>>;
+    // the coefficients of each axis, a row, for each power, a column
+    using Coefficients = decltype(Correction{} / Powers{});
+
+    Coefficients c{};
+    for (uint8_t power = 0; power < 3; power++) {
+        const Vector3f &axes = coeff[power].get();
+        for (uint8_t axis = 0; axis < 3; axis++) {
+            c.data()(axis, power) = axes[axis];
+        }
+    }
+    const Powers t{mp_units::delta<kelvin>(tdiff), sq(tdiff) * pow<2>(kelvin), sq(tdiff) * tdiff * pow<3>(kelvin)};
+    const Correction correction{c * t};
+    return Vector3f(correction.template at<0>().numerical_value_in(Unit),
+                    correction.template at<1>().numerical_value_in(Unit),
+                    correction.template at<2>().numerical_value_in(Unit));
+}
+
+} // namespace
 
 // temperature calibration parameters, per IMU
 const AP_Param::GroupInfo AP_InertialSensor_TCal::var_info[] = {
@@ -201,17 +246,19 @@ const AP_Param::GroupInfo AP_InertialSensor_TCal::var_info[] = {
 /*
   evaluate a 3rd order polynomial (without the constant term) given a set of coefficients
  */
-Vector3f AP_InertialSensor_TCal::polynomial_eval(float tdiff, const AP_Vector3f coeff[3]) const
+Vector3f AP_InertialSensor_TCal::polynomial_eval(float tdiff, const AP_Vector3f coeff[3], Sensor sensor) const
 {
     // evaluate order 3 polynomial
-    const Vector3f *c = (Vector3f *)&coeff[0];
-    return (c[0] + (c[1] + c[2]*tdiff)*tdiff)*tdiff*INV_SCALE_FACTOR;
+    if (sensor == Sensor::Accel) {
+        return evaluate<accel_unit>(tdiff, coeff);
+    }
+    return evaluate<gyro_unit>(tdiff, coeff);
 }
 
 /*
   correct a single sensor for the current temperature
  */
-void AP_InertialSensor_TCal::correct_sensor(float temperature, float cal_temp, const AP_Vector3f coeff[3], Vector3f &v) const
+void AP_InertialSensor_TCal::correct_sensor(float temperature, float cal_temp, const AP_Vector3f coeff[3], Sensor sensor, Vector3f &v) const
 {
     if (enable != Enable::Enabled) {
         return;
@@ -222,23 +269,23 @@ void AP_InertialSensor_TCal::correct_sensor(float temperature, float cal_temp, c
 
     // get the polynomial correction for the difference between the
     // current temperature and the mid temperature
-    v -= polynomial_eval(temperature - TEMP_REFERENCE, coeff);
+    v -= polynomial_eval(temperature - TEMP_REFERENCE, coeff, sensor);
 
     // we need to add the correction for the temperature
     // difference between the TREF, which is the reference used for
     // the calibration process, and the cal_temp, which is the
     // temperature that the offsets and scale factors was setup for
-    v += polynomial_eval(cal_temp - TEMP_REFERENCE, coeff);
+    v += polynomial_eval(cal_temp - TEMP_REFERENCE, coeff, sensor);
 }
 
 void AP_InertialSensor_TCal::correct_accel(float temperature, float cal_temp, Vector3f &accel) const
 {
-    correct_sensor(temperature, cal_temp, accel_coeff, accel);
+    correct_sensor(temperature, cal_temp, accel_coeff, Sensor::Accel, accel);
 }
 
 void AP_InertialSensor_TCal::correct_gyro(float temperature, float cal_temp, Vector3f &gyro) const
 {
-    correct_sensor(temperature, cal_temp, gyro_coeff, gyro);
+    correct_sensor(temperature, cal_temp, gyro_coeff, Sensor::Gyro, gyro);
 }
 
 /*
@@ -249,13 +296,13 @@ void AP_InertialSensor_TCal::correct_gyro(float temperature, float cal_temp, Vec
 void AP_InertialSensor_TCal::sitl_apply_accel(float temperature, Vector3f &accel) const
 {
     const float tmid = 0.5*(temp_max+temp_min);
-    accel += polynomial_eval(temperature - tmid, accel_coeff);
+    accel += polynomial_eval(temperature - tmid, accel_coeff, Sensor::Accel);
 }
 
 void AP_InertialSensor_TCal::sitl_apply_gyro(float temperature, Vector3f &gyro) const
 {
     const float tmid = 0.5*(temp_max+temp_min);
-    gyro += polynomial_eval(temperature - tmid, gyro_coeff);
+    gyro += polynomial_eval(temperature - tmid, gyro_coeff, Sensor::Gyro);
 }
 
 AP_InertialSensor_TCal::Learn::Learn(AP_InertialSensor_TCal &_tcal, float _start_temp) :

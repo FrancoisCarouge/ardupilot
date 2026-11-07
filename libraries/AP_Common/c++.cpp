@@ -84,6 +84,16 @@ void operator delete[](void * ptr)
     if (ptr) free(ptr);
 }
 
+void operator delete(void *p, size_t)
+{
+    if (p) free(p);
+}
+
+void operator delete[](void * ptr, size_t)
+{
+    if (ptr) free(ptr);
+}
+
 #if defined(CYGWIN_BUILD) && CONFIG_HAL_BOARD == HAL_BOARD_SITL
 
 // intercept malloc to ensure memory so allocated is zeroed. this is rather

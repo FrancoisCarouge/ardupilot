@@ -13,7 +13,6 @@
 #pragma once
 
 #include <AP_Math/AP_Math.h>
-#include <AP_Math/vectorN.h>
 
 #define ACCEL_CAL_MAX_NUM_PARAMS 9
 #define ACCEL_CAL_TOLERANCE 0.1
@@ -91,18 +90,6 @@ private:
         Vector3f delta_velocity;
         float delta_time;
     };
-    typedef    VectorN<float, ACCEL_CAL_MAX_NUM_PARAMS> VectorP;
-
-    union param_u {
-        struct param_t s;
-        VectorN<float, ACCEL_CAL_MAX_NUM_PARAMS> a;
-
-        param_u() : a{}
-        {
-            static_assert(sizeof(*this) == sizeof(struct param_t),
-                          "Invalid union members: sizes do not match");
-        }
-    };
 
     //configuration
     uint8_t _conf_num_samples;
@@ -114,7 +101,7 @@ private:
     accel_cal_status_t _status;
     struct AccelSample* _sample_buffer;
     uint8_t _samples_collected;
-    union param_u _param;
+    struct param_t _param;
     float _fitness;
     uint32_t _last_samp_frag_collected_ms;
     float _min_sample_dist;
@@ -138,6 +125,9 @@ private:
     // Function related to Gauss Newton Least square regression process
     float calc_residual(const Vector3f& sample, const struct param_t& params) const;
     float calc_mean_squared_residuals(const struct param_t& params) const;
-    void calc_jacob(const Vector3f& sample, const struct param_t& params, VectorP& ret) const;
+    void calc_jacob(const Vector3f& sample, const struct param_t& params, float ret[ACCEL_CAL_MAX_NUM_PARAMS]) const;
     void run_fit(uint8_t max_iterations, float& fitness);
+    // Gauss Newton fit of N parameters, with typed linear algebra
+    template <uint8_t N>
+    void run_fit_typed(uint8_t max_iterations, float& fitness);
 };
