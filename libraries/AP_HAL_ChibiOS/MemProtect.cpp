@@ -235,7 +235,7 @@ uint32_t memprotect_handle_fault(struct port_extctx *ctx, uint32_t exc_return)
             __DMB();
             memprotect_state.pending = true;
         }
-        memprotect_state.hit_count++;
+        memprotect_state.hit_count = memprotect_state.hit_count + 1;
     }
     if (memprotect_state.hit_count >= AP_MEMPROTECT_MAX_HITS) {
         memprotect_state.latched_off = true;
