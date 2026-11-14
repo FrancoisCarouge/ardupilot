@@ -14,7 +14,6 @@
 
 #include <AP_Param/AP_Param.h>
 #include <AP_Math/AP_Math.h>
-#include "ExtendedKalmanFilter.h"
 #include "Variometer.h"
 #include "SpeedToFly.h"
 
@@ -24,9 +23,18 @@ static constexpr float INITIAL_RADIUS_COVARIANCE = 400.0;
 static constexpr float INITIAL_POSITION_COVARIANCE = 400.0;
 
 
+class ExtendedKalmanFilter;
+
 class SoaringController {
     Variometer::PolarParams _polarParams;
-    ExtendedKalmanFilter _ekf{};
+    // The thermal filter. Its header brings in the Kalman, typed linear
+    // algebra, and units libraries, which would cost every source including
+    // this header seconds to compile: the controller keeps the filter in
+    // storage of its size, checked in AP_Soaring.cpp, so that only the
+    // soaring sources see its type.
+    static constexpr uint8_t EKF_STORAGE_FLOATS = 69;
+    float _ekf_storage[EKF_STORAGE_FLOATS];
+    ExtendedKalmanFilter &_ekf;
     class AP_TECS &_tecs;
     Variometer _vario;
     SpeedToFly _speedToFly;
@@ -150,6 +158,12 @@ public:
     }
 
 private:
+    // The thermal estimate, in SI units: strength [m/s], radius [m], position
+    // north and east [m]
+    float thermal_strength() const;
+    float thermal_radius() const;
+    float thermal_x() const;
+    float thermal_y() const;
 
     ActiveStatus _last_update_status;
 

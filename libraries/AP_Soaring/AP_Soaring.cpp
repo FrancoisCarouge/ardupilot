@@ -8,6 +8,50 @@
 #include <GCS_MAVLink/GCS.h>
 #include <stdint.h>
 
+#include <new>
+#include <type_traits>
+
+#include "ExtendedKalmanFilter.h"
+
+using mp_units::si::metre;
+using mp_units::si::second;
+using typed_linear_algebra::Element;
+
+namespace {
+// A diagonal covariance of the thermal: each variance in its own unit,
+// (m/s)², m², m², m².
+ExtendedKalmanFilter::Covariance diagonal_covariance(const float (&variances)[4])
+{
+    using Covariance = ExtendedKalmanFilter::Covariance;
+    Covariance value{};
+    value.at<0, 0>(variances[0] * Element<Covariance, 0, 0>::reference);
+    value.at<1, 1>(variances[1] * Element<Covariance, 1, 1>::reference);
+    value.at<2, 2>(variances[2] * Element<Covariance, 2, 2>::reference);
+    value.at<3, 3>(variances[3] * Element<Covariance, 3, 3>::reference);
+    return value;
+}
+}
+
+float SoaringController::thermal_strength() const
+{
+    return _ekf.strength().numerical_value_in(metre / second);
+}
+
+float SoaringController::thermal_radius() const
+{
+    return _ekf.radius().numerical_value_in(metre);
+}
+
+float SoaringController::thermal_x() const
+{
+    return _ekf.position_x().numerical_value_in(metre);
+}
+
+float SoaringController::thermal_y() const
+{
+    return _ekf.position_y().numerical_value_in(metre);
+}
+
 #if HAL_SOARING_NVF_EKF_ENABLED
 static constexpr uint32_t NVF_PUBLISHER_DELAY_MS = 250;
 #endif // HAL_SOARING_NVF_EKF_ENABLED
@@ -172,12 +216,18 @@ const AP_Param::GroupInfo SoaringController::var_info[] = {
 };
 
 SoaringController::SoaringController(AP_TECS &tecs, const AP_FixedWing &parms) :
+    _ekf(*new (_ekf_storage) ExtendedKalmanFilter{}),
     _tecs(tecs),
     _vario(parms,_polarParams),
     _speedToFly(_polarParams),
     _aparm(parms),
     _throttle_suppressed(true)
 {
+    // The storage holds the thermal filter exactly, which is never destroyed.
+    static_assert(sizeof(_ekf_storage) == sizeof(ExtendedKalmanFilter));
+    static_assert(alignof(float) >= alignof(ExtendedKalmanFilter));
+    static_assert(std::is_trivially_destructible_v<ExtendedKalmanFilter>);
+
     AP_Param::setup_object_defaults(this, var_info);
 }
 
@@ -261,19 +311,14 @@ void SoaringController::init_thermalling()
     float cov_q1 = powf(thermal_q1, 2); // Process noise for strength
     float cov_q2 = powf(thermal_q2, 2); // Process noise for position and radius
 
-    const float init_q[4] = {cov_q1,
-                             cov_q2,
-                             cov_q2,
-                             cov_q2};
+    const ExtendedKalmanFilter::Covariance q{diagonal_covariance({cov_q1, cov_q2, cov_q2, cov_q2})};
 
-    const MatrixN<float,4> q{init_q};
+    const ExtendedKalmanFilter::Covariance p{diagonal_covariance({INITIAL_STRENGTH_COVARIANCE,
+                                                                  INITIAL_RADIUS_COVARIANCE,
+                                                                  INITIAL_POSITION_COVARIANCE,
+                                                                  INITIAL_POSITION_COVARIANCE})};
 
-    const float init_p[4] = {INITIAL_STRENGTH_COVARIANCE,
-                             INITIAL_RADIUS_COVARIANCE,
-                             INITIAL_POSITION_COVARIANCE,
-                             INITIAL_POSITION_COVARIANCE};
-
-    const MatrixN<float,4> p{init_p};
+    const ExtendedKalmanFilter::Variance output_variance{r * ExtendedKalmanFilter::Variance::reference};
 
     Vector3f position;
 
@@ -283,15 +328,13 @@ void SoaringController::init_thermalling()
     }
 
     // New state vector filter will be reset. Thermal location is placed in front of a/c
-    const float init_xr[4] = {_vario.get_trigger_value(),
-                              INITIAL_THERMAL_RADIUS,
-                              position.x + thermal_distance_ahead * cosf(_ahrs.get_yaw_rad()),
-                              position.y + thermal_distance_ahead * sinf(_ahrs.get_yaw_rad())};
-
-    const VectorN<float,4> xr{init_xr};
+    const ExtendedKalmanFilter::State xr{_vario.get_trigger_value() * (metre / second),
+                                         INITIAL_THERMAL_RADIUS * metre,
+                                         (position.x + thermal_distance_ahead * cosf(_ahrs.get_yaw_rad())) * metre,
+                                         (position.y + thermal_distance_ahead * sinf(_ahrs.get_yaw_rad())) * metre};
 
     // Also reset covariance matrix p so filter is not affected by previous data
-    _ekf.reset(xr, p, q, r);
+    _ekf.reset(xr, p, q, output_variance);
 
     _prev_update_time = AP_HAL::micros64();
     _thermal_start_time_us = AP_HAL::micros64();
@@ -299,8 +342,8 @@ void SoaringController::init_thermalling()
 
     _vario.reset_climb_filter(0.0);
 
-    _position_x_filter.reset(_ekf.X[2]);
-    _position_y_filter.reset(_ekf.X[3]);
+    _position_x_filter.reset(thermal_x());
+    _position_y_filter.reset(thermal_y());
 
     _exit_commanded = false;
 }
@@ -330,13 +373,13 @@ void SoaringController::update_thermalling()
     // existing behaviour
     IGNORE_RETURN(_ahrs.get_wind(wind));
 
-    Vector3f wind_drift = wind*deltaT*_vario.get_filtered_climb()/_ekf.X[0];
+    Vector3f wind_drift = wind*deltaT*_vario.get_filtered_climb()/thermal_strength();
 
     // update the filter
-    _ekf.update(_vario.reading, current_position.x, current_position.y, wind_drift.x, wind_drift.y);
+    _ekf.update(_vario.reading * (metre / second), current_position.x * metre, current_position.y * metre, wind_drift.x * metre, wind_drift.y * metre);
 
     
-    _thermalability = (_ekf.X[0]*expf(-powf(get_thermalling_radius()/_ekf.X[1], 2))) - _vario.get_exp_thermalling_sink();
+    _thermalability = (thermal_strength()*expf(-powf(get_thermalling_radius()/thermal_radius(), 2))) - _vario.get_exp_thermalling_sink();
 
     _prev_update_time = AP_HAL::micros64();
 
@@ -344,8 +387,8 @@ void SoaringController::update_thermalling()
     _position_x_filter.set_cutoff_frequency(1/(3*_vario.tau));
     _position_y_filter.set_cutoff_frequency(1/(3*_vario.tau));
 
-    _position_x_filter.apply(_ekf.X[2], deltaT);
-    _position_y_filter.apply(_ekf.X[3], deltaT);
+    _position_x_filter.apply(thermal_x(), deltaT);
+    _position_y_filter.apply(thermal_y(), deltaT);
 
 #if HAL_LOGGING_ENABLED
     // write log - save the data.
@@ -368,10 +411,10 @@ void SoaringController::update_thermalling()
     AP::logger().WriteStreaming("SOAR", "TimeUS,nettorate,x0,x1,x2,x3,north,east,alt,dx_w,dy_w,th", "Qfffffffffff",
                                            AP_HAL::micros64(),
                                            (double)_vario.reading,
-                                           (double)_ekf.X[0],
-                                           (double)_ekf.X[1],
-                                           (double)_ekf.X[2],
-                                           (double)_ekf.X[3],
+                                           (double)thermal_strength(),
+                                           (double)thermal_radius(),
+                                           (double)thermal_x(),
+                                           (double)thermal_y(),
                                            current_position.x,
                                            current_position.y,
                                            (double)_vario.alt,
@@ -381,10 +424,10 @@ void SoaringController::update_thermalling()
 #if HAL_SOARING_NVF_EKF_ENABLED
     auto const now_ms = AP_HAL::millis();
     if (now_ms - _prev_nvf_pub_time_ms > NVF_PUBLISHER_DELAY_MS) {
-        gcs().send_named_float("SOAREKFX0", (float)_ekf.X[0]);
-        gcs().send_named_float("SOAREKFX1", (float)_ekf.X[1]);
-        gcs().send_named_float("SOAREKFX2", (float)_ekf.X[2]);
-        gcs().send_named_float("SOAREKFX3", (float)_ekf.X[3]);
+        gcs().send_named_float("SOAREKFX0", thermal_strength());
+        gcs().send_named_float("SOAREKFX1", thermal_radius());
+        gcs().send_named_float("SOAREKFX2", thermal_x());
+        gcs().send_named_float("SOAREKFX3", thermal_y());
         _prev_nvf_pub_time_ms = now_ms;
     }
 
@@ -509,7 +552,7 @@ bool SoaringController::check_drift(Vector2f prev_wp, Vector2f next_wp)
     }
 
     // Check against the estimated thermal.
-    Vector2f position(_ekf.X[2], _ekf.X[3]);
+    Vector2f position(thermal_x(), thermal_y());
 
     Vector2f start_pos(_thermal_start_pos.x, _thermal_start_pos.y);
 
