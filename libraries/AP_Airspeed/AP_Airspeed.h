@@ -62,6 +62,9 @@ public:
     // constructor
     Airspeed_Calibration();
 
+    // the filter in its storage is not copyable as bytes
+    CLASS_NO_COPY(Airspeed_Calibration);
+
     // initialise the calibration
     void init(float initial_ratio);
 
@@ -69,12 +72,19 @@ public:
     // new scaling factor
     float update(float airspeed, const Vector3f &vg, int16_t max_airspeed_allowed_during_cal);
 
+    // the state: wind north and east [m/s], and the airspeed scale, the
+    // inverse square root of the ratio; and their variances
+    Vector3f get_state() const;
+    Vector3f get_variances() const;
+
 private:
-    // state of kalman filter for airspeed ratio estimation
-    Matrix3f P; // covariance matrix
-    const float Q0; // process noise matrix top left and middle element
-    const float Q1; // process noise matrix bottom right element
-    Vector3f state; // state vector
+    // The Kalman filter of the wind and of the airspeed scale. Its type, in
+    // Airspeed_Calibration.cpp, brings in the Kalman, typed linear algebra,
+    // and units libraries, which would cost every source including this
+    // header seconds to compile: the calibration keeps the filter in storage
+    // of its size, checked in that source.
+    static constexpr uint8_t FILTER_STORAGE_FLOATS = 44;
+    float _filter_storage[FILTER_STORAGE_FLOATS];
 };
 
 class AP_Airspeed

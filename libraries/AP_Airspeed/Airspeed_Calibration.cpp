@@ -18,15 +18,38 @@
 #include "AP_Airspeed.h"
 
 
+#include "Airspeed_CalibrationFilter.h"
+
+#include <new>
+#include <type_traits>
+
+namespace {
+
+using CalibrationFilter = airspeed_calibration::Filter;
+
+template <typename Storage>
+CalibrationFilter &filter_in(Storage &storage)
+{
+    return *std::launder(reinterpret_cast<CalibrationFilter *>(storage));
+}
+
+template <typename Storage>
+const CalibrationFilter &filter_in(const Storage &storage)
+{
+    return *std::launder(reinterpret_cast<const CalibrationFilter *>(storage));
+}
+
+}
+
 // constructor - fill in all the initial values
 Airspeed_Calibration::Airspeed_Calibration()
-    : P(100,   0,         0,
-        0,   100,         0,
-        0,     0,  0.000001f)
-    , Q0(0.01f)
-    , Q1(0.0000005f)
-    , state(0, 0, 0)
 {
+    // The storage holds the filter exactly, which is never destroyed.
+    static_assert(sizeof(_filter_storage) == sizeof(CalibrationFilter));
+    static_assert(alignof(float) >= alignof(CalibrationFilter));
+    static_assert(std::is_trivially_destructible_v<CalibrationFilter>);
+
+    new (_filter_storage) CalibrationFilter{airspeed_calibration::make_filter()};
 }
 
 /*
@@ -34,7 +57,25 @@ Airspeed_Calibration::Airspeed_Calibration()
  */
 void Airspeed_Calibration::init(float initial_ratio)
 {
-    state.z = 1.0f / sqrtf(initial_ratio);
+    airspeed_calibration::set_ratio(filter_in(_filter_storage), initial_ratio);
+}
+
+Vector3f Airspeed_Calibration::get_state() const
+{
+    using namespace airspeed_calibration;
+    const State &x = filter_in(_filter_storage).x();
+    return Vector3f{x.at<0>().numerical_value_in(metre_per_second),
+                    x.at<1>().numerical_value_in(metre_per_second),
+                    x.at<2>().numerical_value_in(mp_units::one)};
+}
+
+Vector3f Airspeed_Calibration::get_variances() const
+{
+    using namespace airspeed_calibration;
+    const Covariance &p = filter_in(_filter_storage).p();
+    return Vector3f{p.at<0, 0>().numerical_value_in(SpeedSquared::unit),
+                    p.at<1, 1>().numerical_value_in(SpeedSquared::unit),
+                    p.at<2, 2>().numerical_value_in(mp_units::one)};
 }
 
 /*
@@ -43,73 +84,8 @@ void Airspeed_Calibration::init(float initial_ratio)
  */
 float Airspeed_Calibration::update(float airspeed, const Vector3f &vg, int16_t max_airspeed_allowed_during_cal)
 {
-    // Perform the covariance prediction
-    // Q is a diagonal matrix so only need to add three terms in
-    // C code implementation
-    // P = P + Q;
-    P.a.x += Q0;
-    P.b.y += Q0;
-    P.c.z += Q1;
-
-    // Perform the predicted measurement using the current state estimates
-    // No state prediction required because states are assumed to be time
-    // invariant plus process noise
-    // Ignore vertical wind component
-    float TAS_pred = state.z * norm(vg.x - state.x, vg.y - state.y, vg.z);
-    float TAS_mea  = airspeed;
-
-    // Calculate the observation Jacobian H_TAS
-    float SH1 = sq(vg.y - state.y) + sq(vg.x - state.x);
-    if (SH1 < 0.000001f) {
-        // avoid division by a small number
-        return state.z;
-    }
-    float SH2 = 1/sqrtf(SH1);
-
-    // observation Jacobian
-    Vector3f H_TAS(
-        -(state.z*SH2*(2*vg.x - 2*state.x))/2,
-        -(state.z*SH2*(2*vg.y - 2*state.y))/2,
-        1/SH2);
-
-    // Calculate the fusion innovation covariance assuming a TAS measurement
-    // noise of 1.0 m/s
-    // S = H_TAS*P*H_TAS' + 1.0; % [1 x 3] * [3 x 3] * [3 x 1] + [1 x 1]
-    Vector3f PH = P * H_TAS;
-    float S = H_TAS * PH + 1.0f;
-
-    // Calculate the Kalman gain
-    // [3 x 3] * [3 x 1] / [1 x 1]
-    Vector3f KG = PH / S;
-
-    // Update the states
-    state += KG*(TAS_mea - TAS_pred); // [3 x 1] + [3 x 1] * [1 x 1]
-
-    // Update the covariance matrix
-    Vector3f HP2 = H_TAS.row_times_mat(P);
-    P -= KG.mul_rowcol(HP2);
-
-    // force symmetry on the covariance matrix - necessary due to rounding
-    // errors
-    float P12 = 0.5f * (P.a.y + P.b.x);
-    float P13 = 0.5f * (P.a.z + P.c.x);
-    float P23 = 0.5f * (P.b.z + P.c.y);
-    P.a.y = P.b.x = P12;
-    P.a.z = P.c.x = P13;
-    P.b.z = P.c.y = P23;
-
-    // Constrain diagonals to be non-negative - protects against rounding errors
-    P.a.x = MAX(P.a.x, 0.0f);
-    P.b.y = MAX(P.b.y, 0.0f);
-    P.c.z = MAX(P.c.z, 0.0f);
-
-    state.x = constrain_float(state.x, -max_airspeed_allowed_during_cal, max_airspeed_allowed_during_cal);
-    state.y = constrain_float(state.y, -max_airspeed_allowed_during_cal, max_airspeed_allowed_during_cal);
-    state.z = constrain_float(state.z, 0.5f, 1.0f);
-
-    return state.z;
+    return airspeed_calibration::update(filter_in(_filter_storage), airspeed, vg.x, vg.y, vg.z, max_airspeed_allowed_during_cal);
 }
-
 
 /*
   called once a second to do calibration update
@@ -134,7 +110,7 @@ void AP_Airspeed::update_calibration(uint8_t i, const Vector3f &vground, int16_t
     // very useful both for testing and to force a reasonable value.
     float ratio = constrain_float(param[i].ratio, 1.0f, 4.0f);
 
-    state[i].calibration.state.z = 1.0f / sqrtf(ratio);
+    state[i].calibration.init(ratio);
 
     // calculate true airspeed, assuming a airspeed ratio of 1.0
     float dpress = MAX(get_differential_pressure(i), 0);
@@ -196,12 +172,12 @@ void AP_Airspeed::send_airspeed_calibration(const Vector3f &vground)
         diff_pressure: get_differential_pressure(i),
         EAS2TAS: AP::ahrs().get_EAS2TAS(),
         ratio: param[i].ratio.get(),
-        state_x: state[i].calibration.state.x,
-        state_y: state[i].calibration.state.y,
-        state_z: state[i].calibration.state.z,
-        Pax: state[i].calibration.P.a.x,
-        Pby: state[i].calibration.P.b.y,
-        Pcz: state[i].calibration.P.c.z
+        state_x: state[i].calibration.get_state().x,
+        state_y: state[i].calibration.get_state().y,
+        state_z: state[i].calibration.get_state().z,
+        Pax: state[i].calibration.get_variances().x,
+        Pby: state[i].calibration.get_variances().y,
+        Pcz: state[i].calibration.get_variances().z
         };
         gcs().send_to_active_channels(MAVLINK_MSG_ID_AIRSPEED_AUTOCAL,
                                       (const char *)&packet);
