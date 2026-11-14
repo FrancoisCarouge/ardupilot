@@ -1,82 +1,72 @@
 #include "ExtendedKalmanFilter.h"
-#include "AP_Math/matrixN.h"
 
+#include <cmath>
 
-float ExtendedKalmanFilter::measurementpredandjacobian(VectorN<float,N> &A, float Px, float Py)
+using mp_units::si::metre;
+
+namespace {
+
+// The exponential of a ratio: mp-units' exp() finds only an exp() of the
+// representation by argument-dependent lookup on a freestanding build, which a
+// float does not have.
+mp_units::quantity<mp_units::one, float> exponential(mp_units::quantity<mp_units::one, float> ratio)
 {
-    // This function computes the Jacobian using equations from
-    // analytical derivation of Gaussian updraft distribution
-    // This expression gets used lots
-    float expon = expf(- (powf(X[2]-Px, 2) + powf(X[3]-Py, 2)) / powf(X[1], 2));
-    // Expected measurement
-    float w = X[0] * expon;
-
-    // Elements of the Jacobian
-    A[0] = expon;
-    A[1] = 2 * X[0] * ((powf(X[2]-Px,2) + powf(X[3]-Py,2)) / powf(X[1],3)) * expon;
-    A[2] = -2 * (X[0] * (X[2]-Px) / powf(X[1],2)) * expon;
-    A[3] = -2 * (X[0] * (X[3]-Py) / powf(X[1],2)) * expon;
-    return w;
+    return std::exp(ratio.numerical_value_in(mp_units::one)) * mp_units::one;
 }
 
-
-void ExtendedKalmanFilter::reset(const VectorN<float,N> &x, const MatrixN<float,N> &p, const MatrixN<float,N> q, float r)
-{
-    P = p;
-    X = x;
-    Q = q;
-    R = r;
 }
 
-
-void ExtendedKalmanFilter::update(float z, float Px, float Py, float driftX, float driftY)
+ExtendedKalmanFilter::OutputModel ExtendedKalmanFilter::updraft_jacobian::operator()(const State &x, const Length &px, const Length &py) const
 {
-    MatrixN<float,N> tempM;
-    VectorN<float,N> H;
-    VectorN<float,N> P12;
-    VectorN<float,N> K;
-    
-    // LINE 28
-    // Estimate new state from old.
-    X[2] += driftX;
-    X[3] += driftY;
+    const auto dx = x.at<2>() - px;
+    const auto dy = x.at<3>() - py;
+    const auto r = x.at<1>();
+    const auto expon = exponential(-(dx * dx + dy * dy) / (r * r));
+    OutputModel h{};
+    h.at<0>(expon);
+    h.at<1>(2 * x.at<0>() * ((dx * dx + dy * dy) / (r * r * r)) * expon);
+    h.at<2>(-2 * (x.at<0>() * dx / (r * r)) * expon);
+    h.at<3>(-2 * (x.at<0>() * dy / (r * r)) * expon);
+    return h;
+}
 
-    // LINE 33
-    // Update the covariance matrix
-    // P = A*ekf.P*A'+ekf.Q;
-    // We know A is identity so
-    // P = ekf.P+ekf.Q;
-    P += Q;
+ExtendedKalmanFilter::State ExtendedKalmanFilter::drift::operator()(const State &x, const Length &drift_x, const Length &drift_y) const
+{
+    State y{x};
+    y.at<2>(x.at<2>() + drift_x);
+    y.at<3>(x.at<3>() + drift_y);
+    return y;
+}
 
-    // What measurement do we expect to receive in the estimated
-    // state
-    // LINE 37
-    // [z1,H] = ekf.jacobian_h(x1);
-    float z1 = measurementpredandjacobian(H, Px, Py);
+ExtendedKalmanFilter::Output ExtendedKalmanFilter::updraft::operator()(const State &x, const Length &px, const Length &py) const
+{
+    const auto dx = x.at<2>() - px;
+    const auto dy = x.at<3>() - py;
+    const auto r = x.at<1>();
+    return Output{x.at<0>() * exponential(-(dx * dx + dy * dy) / (r * r))};
+}
 
-    // LINE 40
-    // P12 = P * H';
-    P12.mult(P, H); //cross covariance 
-    
-    // LINE 41
-    // Calculate the KALMAN GAIN
-    // K = P12 * inv(H*P12 + ekf.R);                     %Kalman filter gain
-    K = P12 * 1.0 / (H * P12 + R);
+void ExtendedKalmanFilter::reset(const State &x, const Covariance &p, const Covariance &q, Variance r)
+{
+    _filter.x(x);
+    _filter.p(p);
+    _filter.q(q);
+    _filter.r(r);
+}
 
-    // Correct the state estimate using the measurement residual.
-    // LINE 44
-    // X = x1 + K * (z - z1);
-    X += K * (z - z1);
+void ExtendedKalmanFilter::update(Speed z, Length px, Length py, Length drift_x, Length drift_y)
+{
+    // the thermal drifts, and its uncertainty grows: X += drift, P += Q
+    _filter.predict(drift_x, drift_y);
 
-    // Make sure X[1] stays positive.
-    X[1] = X[1]>40.0 ? X[1]: 40.0;
+    // the variometer reading corrects it, P -= K (H P), and the covariance
+    // stays symmetric, (P + Pᵀ) / 2
+    _filter.update(px, py, z);
 
-    // Correct the covariance too.
-    // LINE 46
-    // NB should be altered to reflect Stengel
-    // P = P_predict - K * P12';
-    tempM.mult(K, P12);
-    P -= tempM;
-    
-    P.force_symmetry();
+    // the radius stays above 40 metres
+    if (_filter.x().at<1>() < 40.0f * metre) {
+        State x{_filter.x()};
+        x.at<1>(40.0f * metre);
+        _filter.x(x);
+    }
 }
