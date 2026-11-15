@@ -20,6 +20,9 @@ public:
     // Constructor
     EKFGSF_yaw();
 
+    // the filters in storage are not copied byte by byte
+    CLASS_NO_COPY(EKFGSF_yaw);
+
     // Update Filter States - this should be called whenever new IMU data is available
     void update(const Vector3F &delAng,// IMU delta angle rotation vector measured in body frame (rad)
                 const Vector3F &delVel,// IMU delta velocity vector measured in body frame (m/s)
@@ -108,12 +111,25 @@ private:
     // The Following declarations are used by bank of EKF's that estimate yaw angle starting from a different yaw hypothesis for each filter.
 
     struct EKF_struct {
-        ftype X[3];     // Vel North (m/s),  Vel East (m/s), yaw (rad)
-        ftype P[3][3];  // covariance matrix
         ftype S[2][2];  // N,E velocity innovation variance (m/s)^2
         ftype innov[2]; // Velocity N,E innovation (m/s)
     };
     EKF_struct EKF[N_MODELS_EKFGSF];
+
+    // The Kalman filter of each model, its state Vel North (m/s), Vel East
+    // (m/s), yaw (rad), and its covariance: defined in EKFGSF_yaw.cpp and
+    // held in this storage, so that the navigation filters including this
+    // header do not compile the typed linear algebra.
+    struct Filter;
+    static constexpr size_t kFilterSize{60 * sizeof(ftype)};
+    struct alignas(ftype) FilterStorage {
+        unsigned char bytes[kFilterSize];
+    } filters[N_MODELS_EKFGSF];
+    Filter &filter(const uint8_t mdl_idx);
+    const Filter &filter(const uint8_t mdl_idx) const;
+
+    // The yaw state of the selected model (rad)
+    ftype yawState(const uint8_t mdl_idx) const;
     bool vel_fuse_running;  // true when the bank of EKF's has started fusing GPS velocity data
     bool run_ekf_gsf;       // true when operating condition is suitable for to run the GSF and EKF models and fuse velocity data
 
@@ -126,9 +142,6 @@ private:
     // Runs the state and covariance update for the selected EKF using the GPS NE velocity measurement
     // Returns false if the sttae and covariance correction failed
     bool correct(const uint8_t mdl_idx, const Vector2F &vel, const ftype velObsVar);
-
-    // Forces symmetry on the covariance matrix for the selected EKF
-    void forceSymmetry(const uint8_t mdl_idx);
 
     // The following declarations are used  by the Gaussian Sum Filter that combines the state estimates from the bank of
     // EKF's to form a single state estimate.

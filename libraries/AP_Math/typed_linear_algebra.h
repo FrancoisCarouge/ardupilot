@@ -159,22 +159,32 @@ inline constexpr mp_units::quantity<Reference, Representation>
 
 namespace typed_linear_algebra {
 
+// The quantities, vectors, and matrices of a representation, float or ftype.
+template <auto Reference, typename Representation>
+using QuantityOf = mp_units::quantity<Reference, Representation>;
+
+template <typename Representation, typename... Types>
+using VectorOf = fcarouge::typed_column_vector<
+    fcarouge::sparse_matrix<Representation, fcarouge::sparse::dense<sizeof...(Types), 1>>, Types...>;
+
+template <typename Representation, typename Rows, typename Columns>
+using MatrixOf = fcarouge::typed_matrix<
+    fcarouge::sparse_matrix<Representation, fcarouge::sparse::dense<Rows::rows, Columns::rows>>,
+    typename Rows::row_indexes, typename Columns::row_indexes>;
+
 template <auto Reference>
-using Quantity = mp_units::quantity<Reference, float>;
+using Quantity = QuantityOf<Reference, float>;
 
 using Length = Quantity<mp_units::si::metre>;
 using Speed = Quantity<mp_units::si::metre / mp_units::si::second>;
 
 // A column vector of the given element types.
 template <typename... Types>
-using Vector = fcarouge::typed_column_vector<
-    fcarouge::sparse_matrix<float, fcarouge::sparse::dense<sizeof...(Types), 1>>, Types...>;
+using Vector = VectorOf<float, Types...>;
 
 // A dense matrix indexed by the rows of a column vector and the columns of another.
 template <typename Rows, typename Columns>
-using Matrix = fcarouge::typed_matrix<
-    fcarouge::sparse_matrix<float, fcarouge::sparse::dense<Rows::rows, Columns::rows>>,
-    typename Rows::row_indexes, typename Columns::row_indexes>;
+using Matrix = MatrixOf<float, Rows, Columns>;
 
 // The type of an element of a typed matrix.
 template <typename Typed, std::size_t Row, std::size_t Column = 0>
