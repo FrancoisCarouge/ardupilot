@@ -68,6 +68,110 @@
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_GPS/AP_GPS.h>
 #include <GCS_MAVLink/GCS.h>
+
+#include <AP_Math/typed_linear_algebra.h>
+
+#include <cmath>
+#include <utility>
+
+namespace {
+
+namespace tla = typed_linear_algebra;
+
+// The magnetic field unit of the samples and offsets.
+inline constexpr struct milligauss final
+    : mp_units::named_unit<"mG", mp_units::mag_ratio<1, 10000000> * mp_units::si::tesla> {} milligauss;
+
+using Field = tla::Quantity<milligauss>;
+using Ratio = tla::Quantity<mp_units::one>;
+
+// The sphere fit's parameters, the radius and three offsets [mGauss], and
+// its residual's Jacobian with respect to them [1]; the ellipsoid fit's,
+// three offsets [mGauss] and six soft-iron factors [1], and its Jacobian, per
+// offset [1] and per factor [mGauss].
+struct sphere {
+    static constexpr size_t count{COMPASS_CAL_NUM_SPHERE_PARAMS};
+    using Parameters = tla::Vector<Field, Field, Field, Field>;
+    using Jacobian = tla::Vector<Ratio, Ratio, Ratio, Ratio>;
+};
+
+struct ellipsoid {
+    static constexpr size_t count{COMPASS_CAL_NUM_ELLIPSOID_PARAMS};
+    using Parameters = tla::Vector<Field, Field, Field, Ratio, Ratio, Ratio, Ratio, Ratio, Ratio>;
+    using Jacobian = tla::Vector<Ratio, Ratio, Ratio, Field, Field, Field, Field, Field, Field>;
+};
+
+template <typename Fit>
+using Normal = tla::Matrix<typename Fit::Jacobian, typename Fit::Jacobian>;
+
+template <typename Fit>
+using Gradient = decltype(typename Fit::Jacobian{} * Field{});
+
+// The typed Jacobian of the numerical values `values`, each in its element's unit.
+template <typename Fit>
+typename Fit::Jacobian typed_jacobian(const float (&values)[Fit::count])
+{
+    typename Fit::Jacobian result;
+    [&]<size_t... Index>(std::index_sequence<Index...>) {
+        (result.template at<Index>(values[Index] *
+             std::remove_cvref_t<decltype(result.template at<Index>())>::reference), ...);
+    }(std::make_index_sequence<Fit::count>{});
+    return result;
+}
+
+// The normal equations JᵀJ and JᵀF over the samples, accumulated element by
+// element, without temporaries: the embedded stack frame limit.
+template <typename Fit, typename JacobianOf, typename ResidualOf>
+NOINLINE void accumulate_normal_equations(Normal<Fit> &JTJ, Gradient<Fit> &JTFI, uint16_t sample_count,
+                                          const JacobianOf &jacobian_of, const ResidualOf &residual_of)
+{
+    constexpr size_t N{Fit::count};
+    for (uint16_t k = 0; k < sample_count; k++) {
+        const typename Fit::Jacobian jacob{jacobian_of(k)};
+        const Field residual{residual_of(k) * milligauss};
+        [&]<size_t... Index>(std::index_sequence<Index...>) {
+            ((JTJ.template at<Index / N, Index % N>(
+                  JTJ.template at<Index / N, Index % N>() +
+                  jacob.template at<Index / N>() * jacob.template at<Index % N>())), ...);
+        }(std::make_index_sequence<N * N>{});
+        [&]<size_t... Index>(std::index_sequence<Index...>) {
+            ((JTFI.template at<Index>(JTFI.template at<Index>() + jacob.template at<Index>() * residual)), ...);
+        }(std::make_index_sequence<N>{});
+    }
+}
+
+// The Levenberg-Marquardt step Δ of (JᵀJ + λ) Δ = JᵀF, solved by elimination
+// with partial pivoting, as numerical values in the parameters' units. The
+// damping λ is added to each diagonal element in that element's own unit, as
+// before: for the ellipsoid fit, 1 for the offsets and mGauss² for the
+// factors, so that its weight depends on the unit of the field (Q11).
+template <typename Fit>
+NOINLINE void damped_step(Normal<Fit> JTJ, const Gradient<Fit> &JTFI, float lambda, float (&values)[Fit::count])
+{
+    [&]<size_t... Index>(std::index_sequence<Index...>) {
+        ((JTJ.template at<Index, Index>(JTJ.template at<Index, Index>() +
+              lambda * std::remove_cvref_t<decltype(JTJ.template at<Index, Index>())>::reference)), ...);
+    }(std::make_index_sequence<Fit::count>{});
+    // ((JᵀJ)⁻¹ JᵀF)ᵀ = (JᵀF)ᵀ (JᵀJ)⁻¹, JᵀJ symmetric
+    const typename Fit::Parameters step{fcarouge::transposed(fcarouge::transposed(JTFI) / JTJ)};
+    [&]<size_t... Index>(std::index_sequence<Index...>) {
+        ((values[Index] = step.template at<Index>().numerical_value_in(
+              std::remove_cvref_t<decltype(step.template at<Index>())>::unit)), ...);
+    }(std::make_index_sequence<Fit::count>{});
+}
+
+template <size_t Count>
+bool all_finite(const float (&values)[Count])
+{
+    for (size_t i = 0; i < Count; i++) {
+        if (!std::isfinite(values[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
 #include <AP_InternalError/AP_InternalError.h>
 
 #define FIELD_RADIUS_MIN 150
@@ -692,50 +796,30 @@ void CompassCalibrator::run_sphere_fit()
     param_t fit1_params, fit2_params;
     fit1_params = fit2_params = _params;
 
-    float JTJ[COMPASS_CAL_NUM_SPHERE_PARAMS*COMPASS_CAL_NUM_SPHERE_PARAMS] = { };
-    float JTJ2[COMPASS_CAL_NUM_SPHERE_PARAMS*COMPASS_CAL_NUM_SPHERE_PARAMS] = { };
-    float JTFI[COMPASS_CAL_NUM_SPHERE_PARAMS] = { };
-
     // Gauss Newton Part common for all kind of extensions including LM
-    for (uint16_t k = 0; k<_samples_collected; k++) {
-        Vector3f sample = _sample_buffer[k].get();
-
-        float sphere_jacob[COMPASS_CAL_NUM_SPHERE_PARAMS];
-
-        calc_sphere_jacob(sample, fit1_params, sphere_jacob);
-
-        for (uint8_t i = 0;i < COMPASS_CAL_NUM_SPHERE_PARAMS; i++) {
-            // compute JTJ
-            for (uint8_t j = 0; j < COMPASS_CAL_NUM_SPHERE_PARAMS; j++) {
-                JTJ[i*COMPASS_CAL_NUM_SPHERE_PARAMS+j] += sphere_jacob[i] * sphere_jacob[j];
-                JTJ2[i*COMPASS_CAL_NUM_SPHERE_PARAMS+j] += sphere_jacob[i] * sphere_jacob[j];   //a backup JTJ for LM
-            }
-            // compute JTFI
-            JTFI[i] += sphere_jacob[i] * calc_residual(sample, fit1_params);
-        }
-    }
+    Normal<sphere> JTJ{};
+    Gradient<sphere> JTFI{};
+    accumulate_normal_equations<sphere>(JTJ, JTFI, _samples_collected,
+        [&](uint16_t k) {
+            float sphere_jacob[COMPASS_CAL_NUM_SPHERE_PARAMS];
+            calc_sphere_jacob(_sample_buffer[k].get(), fit1_params, sphere_jacob);
+            return typed_jacobian<sphere>(sphere_jacob);
+        },
+        [&](uint16_t k) { return calc_residual(_sample_buffer[k].get(), fit1_params); });
 
     //------------------------Levenberg-Marquardt-part-starts-here---------------------------------//
     // refer: http://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm#Choice_of_damping_parameter
-    for (uint8_t i = 0; i < COMPASS_CAL_NUM_SPHERE_PARAMS; i++) {
-        JTJ[i*COMPASS_CAL_NUM_SPHERE_PARAMS+i] += _sphere_lambda;
-        JTJ2[i*COMPASS_CAL_NUM_SPHERE_PARAMS+i] += _sphere_lambda/lma_damping;
-    }
-
-    if (!mat_inverse(JTJ, JTJ, 4)) {
-        return;
-    }
-
-    if (!mat_inverse(JTJ2, JTJ2, 4)) {
+    float step1[COMPASS_CAL_NUM_SPHERE_PARAMS], step2[COMPASS_CAL_NUM_SPHERE_PARAMS];
+    damped_step<sphere>(JTJ, JTFI, _sphere_lambda, step1);
+    damped_step<sphere>(JTJ, JTFI, _sphere_lambda/lma_damping, step2);
+    if (!all_finite(step1) || !all_finite(step2)) {
         return;
     }
 
     // extract radius, offset, diagonals and offdiagonal parameters
     for (uint8_t row=0; row < COMPASS_CAL_NUM_SPHERE_PARAMS; row++) {
-        for (uint8_t col=0; col < COMPASS_CAL_NUM_SPHERE_PARAMS; col++) {
-            fit1_params.get_sphere_params()[row] -= JTFI[col] * JTJ[row*COMPASS_CAL_NUM_SPHERE_PARAMS+col];
-            fit2_params.get_sphere_params()[row] -= JTFI[col] * JTJ2[row*COMPASS_CAL_NUM_SPHERE_PARAMS+col];
-        }
+        fit1_params.get_sphere_params()[row] -= step1[row];
+        fit2_params.get_sphere_params()[row] -= step2[row];
     }
 
     // calculate fitness of two possible sets of parameters
@@ -808,50 +892,30 @@ void CompassCalibrator::run_ellipsoid_fit()
     param_t fit1_params, fit2_params;
     fit1_params = fit2_params = _params;
 
-    float JTJ[COMPASS_CAL_NUM_ELLIPSOID_PARAMS*COMPASS_CAL_NUM_ELLIPSOID_PARAMS] = { };
-    float JTJ2[COMPASS_CAL_NUM_ELLIPSOID_PARAMS*COMPASS_CAL_NUM_ELLIPSOID_PARAMS] = { };
-    float JTFI[COMPASS_CAL_NUM_ELLIPSOID_PARAMS] = { };
-
     // Gauss Newton Part common for all kind of extensions including LM
-    for (uint16_t k = 0; k<_samples_collected; k++) {
-        Vector3f sample = _sample_buffer[k].get();
-
-        float ellipsoid_jacob[COMPASS_CAL_NUM_ELLIPSOID_PARAMS];
-
-        calc_ellipsoid_jacob(sample, fit1_params, ellipsoid_jacob);
-
-        for (uint8_t i = 0;i < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; i++) {
-            // compute JTJ
-            for (uint8_t j = 0; j < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; j++) {
-                JTJ [i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+j] += ellipsoid_jacob[i] * ellipsoid_jacob[j];
-                JTJ2[i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+j] += ellipsoid_jacob[i] * ellipsoid_jacob[j];
-            }
-            // compute JTFI
-            JTFI[i] += ellipsoid_jacob[i] * calc_residual(sample, fit1_params);
-        }
-    }
+    Normal<ellipsoid> JTJ{};
+    Gradient<ellipsoid> JTFI{};
+    accumulate_normal_equations<ellipsoid>(JTJ, JTFI, _samples_collected,
+        [&](uint16_t k) {
+            float ellipsoid_jacob[COMPASS_CAL_NUM_ELLIPSOID_PARAMS];
+            calc_ellipsoid_jacob(_sample_buffer[k].get(), fit1_params, ellipsoid_jacob);
+            return typed_jacobian<ellipsoid>(ellipsoid_jacob);
+        },
+        [&](uint16_t k) { return calc_residual(_sample_buffer[k].get(), fit1_params); });
 
     //------------------------Levenberg-Marquardt-part-starts-here---------------------------------//
     //refer: http://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm#Choice_of_damping_parameter
-    for (uint8_t i = 0; i < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; i++) {
-        JTJ[i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+i] += _ellipsoid_lambda;
-        JTJ2[i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+i] += _ellipsoid_lambda/lma_damping;
-    }
-
-    if (!mat_inverse(JTJ, JTJ, 9)) {
-        return;
-    }
-
-    if (!mat_inverse(JTJ2, JTJ2, 9)) {
+    float step1[COMPASS_CAL_NUM_ELLIPSOID_PARAMS], step2[COMPASS_CAL_NUM_ELLIPSOID_PARAMS];
+    damped_step<ellipsoid>(JTJ, JTFI, _ellipsoid_lambda, step1);
+    damped_step<ellipsoid>(JTJ, JTFI, _ellipsoid_lambda/lma_damping, step2);
+    if (!all_finite(step1) || !all_finite(step2)) {
         return;
     }
 
     // extract radius, offset, diagonals and offdiagonal parameters
     for (uint8_t row=0; row < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; row++) {
-        for (uint8_t col=0; col < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; col++) {
-            fit1_params.get_ellipsoid_params()[row] -= JTFI[col] * JTJ[row*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+col];
-            fit2_params.get_ellipsoid_params()[row] -= JTFI[col] * JTJ2[row*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+col];
-        }
+        fit1_params.get_ellipsoid_params()[row] -= step1[row];
+        fit2_params.get_ellipsoid_params()[row] -= step2[row];
     }
 
     // calculate fitness of two possible sets of parameters
