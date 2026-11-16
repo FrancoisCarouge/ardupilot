@@ -16,6 +16,141 @@
 #include "AccelCalibrator.h"
 #include <stdio.h>
 #include <AP_HAL/AP_HAL.h>
+#include <AP_Math/typed_linear_algebra.h>
+
+#include <cmath>
+#include <tuple>
+#include <utility>
+
+namespace {
+
+namespace tla = typed_linear_algebra;
+
+constexpr auto metre_per_second_squared = mp_units::si::metre / (mp_units::si::second * mp_units::si::second);
+using Acceleration = tla::Quantity<metre_per_second_squared>;
+using Ratio = tla::Quantity<mp_units::one>;
+
+// The parameters: three offsets [m/s/s], three diagonal scale factors [1], and
+// for the ellipsoid fit three off-diagonal ones [1]; the residual's Jacobian
+// with respect to them: per offset [1], per scale factor [m/s/s].
+template <size_t Count> struct gauss_newton;
+
+template <> struct gauss_newton<6> {
+    using Parameters = tla::Vector<Acceleration, Acceleration, Acceleration, Ratio, Ratio, Ratio>;
+    using Jacobian = tla::Vector<Ratio, Ratio, Ratio, Acceleration, Acceleration, Acceleration>;
+};
+
+template <> struct gauss_newton<9> {
+    using Parameters = tla::Vector<Acceleration, Acceleration, Acceleration, Ratio, Ratio, Ratio, Ratio, Ratio, Ratio>;
+    using Jacobian = tla::Vector<Ratio, Ratio, Ratio, Acceleration, Acceleration, Acceleration,
+                                 Acceleration, Acceleration, Acceleration>;
+};
+
+// The Jacobian of the residual, gravity less the length of the corrected
+// sample, with respect to the parameters: its first Count elements.
+template <size_t Count>
+typename gauss_newton<Count>::Jacobian residual_jacobian(const Vector3f &sample, const AccelCalibrator::param_t &params)
+{
+    const Vector3f &offset = params.offset;
+    const Vector3f &diag = params.diag;
+    const Vector3f &offdiag = params.offdiag;
+    Matrix3f M(
+        diag.x    , offdiag.x , offdiag.y,
+        offdiag.x , diag.y    , offdiag.z,
+        offdiag.y , offdiag.z , diag.z
+    );
+
+    float A =  (diag.x    * (sample.x + offset.x)) + (offdiag.x * (sample.y + offset.y)) + (offdiag.y * (sample.z + offset.z));
+    float B =  (offdiag.x * (sample.x + offset.x)) + (diag.y    * (sample.y + offset.y)) + (offdiag.z * (sample.z + offset.z));
+    float C =  (offdiag.y * (sample.x + offset.x)) + (offdiag.z * (sample.y + offset.y)) + (diag.z    * (sample.z + offset.z));
+    float length = (M*(sample+offset)).length();
+
+    typename gauss_newton<Count>::Jacobian ret;
+    // 0-2: offsets
+    ret.template at<0>(-1.0f * (((diag.x    * A) + (offdiag.x * B) + (offdiag.y * C))/length) * mp_units::one);
+    ret.template at<1>(-1.0f * (((offdiag.x * A) + (diag.y    * B) + (offdiag.z * C))/length) * mp_units::one);
+    ret.template at<2>(-1.0f * (((offdiag.y * A) + (offdiag.z * B) + (diag.z    * C))/length) * mp_units::one);
+    // 3-5: diagonals
+    ret.template at<3>(-1.0f * ((sample.x + offset.x) * A)/length * metre_per_second_squared);
+    ret.template at<4>(-1.0f * ((sample.y + offset.y) * B)/length * metre_per_second_squared);
+    ret.template at<5>(-1.0f * ((sample.z + offset.z) * C)/length * metre_per_second_squared);
+    if constexpr (Count == 9) {
+        // 6-8: off-diagonals
+        ret.template at<6>(-1.0f * (((sample.y + offset.y) * A) + ((sample.x + offset.x) * B))/length * metre_per_second_squared);
+        ret.template at<7>(-1.0f * (((sample.z + offset.z) * A) + ((sample.x + offset.x) * C))/length * metre_per_second_squared);
+        ret.template at<8>(-1.0f * (((sample.z + offset.z) * B) + ((sample.y + offset.y) * C))/length * metre_per_second_squared);
+    }
+    return ret;
+}
+
+// The normal equations JᵀJ and JᵀF of the first Count parameters,
+// accumulated over the samples element by element, without temporaries:
+// the embedded stack frame limit.
+template <size_t Count, typename Normal, typename Gradient, typename SampleAt, typename ResidualOf>
+NOINLINE void accumulate_normal_equations(Normal &JTJ, Gradient &JTFI, const AccelCalibrator::param_t &params,
+                                          uint16_t sample_count, const SampleAt &sample_at,
+                                          const ResidualOf &residual_of)
+{
+    for (uint16_t k = 0; k < sample_count; k++) {
+        const Vector3f sample = sample_at(k);
+        const auto jacob = residual_jacobian<Count>(sample, params);
+        const Acceleration residual{residual_of(sample, params) * metre_per_second_squared};
+        [&]<size_t... Index>(std::index_sequence<Index...>) {
+            ((JTJ.template at<Index / Count, Index % Count>(
+                  JTJ.template at<Index / Count, Index % Count>() +
+                  jacob.template at<Index / Count>() * jacob.template at<Index % Count>())), ...);
+        }(std::make_index_sequence<Count * Count>{});
+        [&]<size_t... Index>(std::index_sequence<Index...>) {
+            ((JTFI.template at<Index>(JTFI.template at<Index>() + jacob.template at<Index>() * residual)), ...);
+        }(std::make_index_sequence<Count>{});
+    }
+}
+
+// The Gauss-Newton step Δ of JᵀJ Δ = JᵀF, solved by elimination with partial
+// pivoting, as numerical values in the parameters' units.
+template <size_t Count, typename Normal, typename Gradient>
+NOINLINE void solve_step(const Normal &JTJ, const Gradient &JTFI, float (&values)[Count])
+{
+    using Parameters = typename gauss_newton<Count>::Parameters;
+    // ((JᵀJ)⁻¹ JᵀF)ᵀ = (JᵀF)ᵀ (JᵀJ)⁻¹, JᵀJ symmetric
+    const Parameters step{fcarouge::transposed(fcarouge::transposed(JTFI) / JTJ)};
+    [&]<size_t... Index>(std::index_sequence<Index...>) {
+        ((values[Index] = step.template at<Index>().numerical_value_in(
+              std::remove_cvref_t<decltype(step.template at<Index>())>::unit)), ...);
+    }(std::make_index_sequence<Count>{});
+}
+
+// One Gauss-Newton iteration on the first Count parameters: the parameters
+// moved by -Δ. False if JᵀJ is singular.
+template <size_t Count, typename SampleAt, typename ResidualOf>
+bool gauss_newton_step(AccelCalibrator::param_t &params, uint16_t sample_count,
+                       const SampleAt &sample_at, const ResidualOf &residual_of)
+{
+    using Jacobian = typename gauss_newton<Count>::Jacobian;
+    using Normal = tla::Matrix<Jacobian, Jacobian>;
+    using Gradient = decltype(Jacobian{} * Acceleration{});
+
+    Normal JTJ{};
+    Gradient JTFI{};
+    accumulate_normal_equations<Count>(JTJ, JTFI, params, sample_count, sample_at, residual_of);
+
+    float values[Count];
+    solve_step<Count>(JTJ, JTFI, values);
+    for (size_t i = 0; i < Count; i++) {
+        if (!std::isfinite(values[i])) {
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < Count; i++) {
+        Vector3f &group = i < 3 ? params.offset : (i < 6 ? params.diag : params.offdiag);
+        group[i % 3] -= values[i];
+    }
+    return true;
+}
+
+} // namespace
+
 
 const extern AP_HAL::HAL& hal;
 /*
@@ -333,36 +468,21 @@ void AccelCalibrator::run_fit(uint8_t max_iterations, float& fitness)
     union param_u fit_param = _param;
     uint8_t num_iterations = 0;
 
+    const auto sample_at = [this](uint16_t k) {
+        Vector3f sample;
+        get_sample(k, sample);
+        return sample;
+    };
+    const auto residual_of = [this](const Vector3f &sample, const struct param_t &params) {
+        return calc_residual(sample, params);
+    };
+
     while(num_iterations < max_iterations) {
-        float JTJ[ACCEL_CAL_MAX_NUM_PARAMS*ACCEL_CAL_MAX_NUM_PARAMS] {};
-        VectorP JTFI;
-
-        for(uint16_t k = 0; k<_samples_collected; k++) {
-            Vector3f sample;
-            get_sample(k, sample);
-
-            VectorN<float,ACCEL_CAL_MAX_NUM_PARAMS> jacob;
-
-            calc_jacob(sample, fit_param.s, jacob);
-
-            for(uint8_t i = 0; i < get_num_params(); i++) {
-                // compute JTJ
-                for(uint8_t j = 0; j < get_num_params(); j++) {
-                    JTJ[i*get_num_params()+j] += jacob[i] * jacob[j];
-                }
-                // compute JTFI
-                JTFI[i] += jacob[i] * calc_residual(sample, fit_param.s);
-            }
-        }
-
-        if (!mat_inverse(JTJ, JTJ, get_num_params())) {
+        const bool solved = get_num_params() == 9
+            ? gauss_newton_step<9>(fit_param.s, _samples_collected, sample_at, residual_of)
+            : gauss_newton_step<6>(fit_param.s, _samples_collected, sample_at, residual_of);
+        if (!solved) {
             return;
-        }
-
-        for(uint8_t row=0; row < get_num_params(); row++) {
-            for(uint8_t col=0; col < get_num_params(); col++) {
-                fit_param.a[row] -= JTFI[col] * JTJ[row*get_num_params()+col];
-            }
         }
 
         fitness = calc_mean_squared_residuals(fit_param.s);
@@ -407,43 +527,6 @@ float AccelCalibrator::calc_mean_squared_residuals(const struct param_t& params)
     }
     sum /= _samples_collected;
     return sum;
-}
-
-// calculate jacobian, a matrix that defines relation to variation in fitness with variation in each of the parameters
-// this is used in LSq estimator to adjust variation in parameter to be used for next iteration of LSq
-void AccelCalibrator::calc_jacob(const Vector3f& sample, const struct param_t& params, VectorP &ret) const {
-    switch (_conf_fit_type) {
-        case ACCEL_CAL_AXIS_ALIGNED_ELLIPSOID:
-        case ACCEL_CAL_ELLIPSOID: {
-            const Vector3f &offset = params.offset;
-            const Vector3f &diag = params.diag;
-            const Vector3f &offdiag = params.offdiag;
-            Matrix3f M(
-                diag.x    , offdiag.x , offdiag.y,
-                offdiag.x , diag.y    , offdiag.z,
-                offdiag.y , offdiag.z , diag.z
-            );
-
-            float A =  (diag.x    * (sample.x + offset.x)) + (offdiag.x * (sample.y + offset.y)) + (offdiag.y * (sample.z + offset.z));
-            float B =  (offdiag.x * (sample.x + offset.x)) + (diag.y    * (sample.y + offset.y)) + (offdiag.z * (sample.z + offset.z));
-            float C =  (offdiag.y * (sample.x + offset.x)) + (offdiag.z * (sample.y + offset.y)) + (diag.z    * (sample.z + offset.z));
-            float length = (M*(sample+offset)).length();
-
-            // 0-2: offsets
-            ret[0] = -1.0f * (((diag.x    * A) + (offdiag.x * B) + (offdiag.y * C))/length);
-            ret[1] = -1.0f * (((offdiag.x * A) + (diag.y    * B) + (offdiag.z * C))/length);
-            ret[2] = -1.0f * (((offdiag.y * A) + (offdiag.z * B) + (diag.z    * C))/length);
-            // 3-5: diagonals
-            ret[3] = -1.0f * ((sample.x + offset.x) * A)/length;
-            ret[4] = -1.0f * ((sample.y + offset.y) * B)/length;
-            ret[5] = -1.0f * ((sample.z + offset.z) * C)/length;
-            // 6-8: off-diagonals
-            ret[6] = -1.0f * (((sample.y + offset.y) * A) + ((sample.x + offset.x) * B))/length;
-            ret[7] = -1.0f * (((sample.z + offset.z) * A) + ((sample.x + offset.x) * C))/length;
-            ret[8] = -1.0f * (((sample.z + offset.z) * B) + ((sample.y + offset.y) * C))/length;
-            return;
-        }
-    }
 }
 
 // returns number of parameters are required for selected Fit type

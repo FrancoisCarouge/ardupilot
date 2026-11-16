@@ -7,9 +7,10 @@
 #include <GCS_MAVLink/GCS_MAVLink.h>
 #include <AP_Math/AP_Math.h>
 #include <stdint.h>
-#include "PosVelEKF.h"
 #include <AP_HAL/utility/RingBuffer.h>
 #include <AC_PrecLand/AC_PrecLand_StateMachine.h>
+
+class PosVelEKF;
 
 // declare backend classes
 class AC_PrecLand_Backend;
@@ -221,7 +222,14 @@ private:
     uint32_t                    _last_backend_los_meas_ms;  // system time target was last seen
     uint32_t                    _last_valid_target_ms;      // last time PrecLand library had a output of the landing target position
 
-    PosVelEKF                   _ekf_x, _ekf_y;             // Kalman Filter for x and y axis
+    // Kalman Filter for x and y axis. Its header brings in the Kalman, typed
+    // linear algebra, and units libraries, which would cost every source
+    // including this header seconds to compile: the filters live in storage
+    // of their size, checked in AC_PrecLand.cpp, so that only that source
+    // sees their type.
+    static constexpr uint8_t EKF_STORAGE_FLOATS = 29;
+    float                       _ekf_storage[2][EKF_STORAGE_FLOATS];
+    PosVelEKF                   &_ekf_x, &_ekf_y;
     uint32_t                    _outlier_reject_count;      // mini-EKF's outlier counter (3 consecutive outliers lead to EKF accepting updates)
 
     Vector3f                    _target_pos_rel_meas_ned_m; // target's relative position as 3D vector

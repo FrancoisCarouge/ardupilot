@@ -47,7 +47,7 @@ template <typename T, uint8_t N>
 void MatrixN<T,N>::force_symmetry(void)
 {
     for (uint8_t i = 0; i < N; i++) {
-        for (uint8_t j = 0; j < (i - 1); j++) {
+        for (uint8_t j = 0; j < i; j++) {
             v[i][j] = (v[i][j] + v[j][i]) / 2;
             v[j][i] = v[i][j];
         }
