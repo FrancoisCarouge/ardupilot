@@ -34,12 +34,14 @@ using Ratio = tla::Quantity<mp_units::one>;
 // offset [1] and per factor [mGauss].
 struct sphere {
     static constexpr size_t count{COMPASS_CAL_NUM_SPHERE_PARAMS};
+    static constexpr bool scaled_damping{false};
     using Parameters = tla::Vector<Field, Field, Field, Field>;
     using Jacobian = tla::Vector<Ratio, Ratio, Ratio, Ratio>;
 };
 
 struct ellipsoid {
     static constexpr size_t count{COMPASS_CAL_NUM_ELLIPSOID_PARAMS};
+    static constexpr bool scaled_damping{true};
     using Parameters = tla::Vector<Field, Field, Field, Ratio, Ratio, Ratio, Ratio, Ratio, Ratio>;
     using Jacobian = tla::Vector<Ratio, Ratio, Ratio, Field, Field, Field, Field, Field, Field>;
 };
@@ -83,17 +85,23 @@ NOINLINE void accumulate_normal_equations(Normal<Fit> &JTJ, Gradient<Fit> &JTFI,
     }
 }
 
-// The Levenberg-Marquardt step Δ of (JᵀJ + λ) Δ = JᵀF, solved by elimination
+// The Levenberg-Marquardt step Δ of (JᵀJ + D) Δ = JᵀF, solved by elimination
 // with partial pivoting, as numerical values in the parameters' units. The
-// damping λ is added to each diagonal element in that element's own unit, as
-// before: for the ellipsoid fit, 1 for the offsets and mGauss² for the
-// factors, so that its weight depends on the unit of the field (Q11).
+// damping D is diagonal: λ diag(JᵀJ), Marquardt's scaling, for a fit whose
+// parameters are of different units, so that the step does not depend on
+// them (the ellipsoid fit: offsets [mGauss] and soft-iron factors [1]); λ
+// itself for a fit whose JᵀJ is dimensionless (the sphere fit).
 template <typename Fit>
 NOINLINE void damped_step(Normal<Fit> JTJ, const Gradient<Fit> &JTFI, float lambda, float (&values)[Fit::count])
 {
     [&]<size_t... Index>(std::index_sequence<Index...>) {
-        ((JTJ.template at<Index, Index>(JTJ.template at<Index, Index>() +
-              lambda * std::remove_cvref_t<decltype(JTJ.template at<Index, Index>())>::reference)), ...);
+        if constexpr (Fit::scaled_damping) {
+            ((JTJ.template at<Index, Index>(JTJ.template at<Index, Index>() +
+                  lambda * JTJ.template at<Index, Index>())), ...);
+        } else {
+            ((JTJ.template at<Index, Index>(JTJ.template at<Index, Index>() +
+                  lambda * std::remove_cvref_t<decltype(JTJ.template at<Index, Index>())>::reference)), ...);
+        }
     }(std::make_index_sequence<Fit::count>{});
     // ((JᵀJ)⁻¹ JᵀF)ᵀ = (JᵀF)ᵀ (JᵀJ)⁻¹, JᵀJ symmetric
     const typename Fit::Parameters step{fcarouge::transposed(fcarouge::transposed(JTFI) / JTJ)};
