@@ -13,7 +13,9 @@
  */
 #include "stdio.h"
 
+#if __has_include(<sys/reent.h>)
 #include <sys/reent.h>
+#endif
 
 #ifndef EOF
 #define EOF (-1)
@@ -21,9 +23,22 @@
 
 extern "C" {
 
+// FILE is the C library's own type: newlib's __FILE of <sys/reent.h>, or
+// picolibc's struct __file, under the guards of their stdio.h.
+#if __has_include(<sys/reent.h>)
 #if !defined(__FILE_defined)
 typedef __FILE FILE;
 #define __FILE_defined
+#endif
+#else
+#ifndef ___FILE_DECLARED
+typedef struct __file __FILE;
+#define ___FILE_DECLARED
+#endif
+#ifndef _FILE_DECLARED
+typedef __FILE FILE;
+#define _FILE_DECLARED
+#endif
 #endif
 
 extern FILE *const ap_chibios_stdout __asm__("ap_chibios_stdio_streams_are_not_supported_stdout");
