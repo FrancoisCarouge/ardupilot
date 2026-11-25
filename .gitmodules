@@ -45,3 +45,23 @@
 [submodule "modules/picolibc"]
 	path = modules/picolibc
 	url = https://github.com/ArduPilot/picolibc
+[submodule "modules/Kalman"]
+	path = modules/Kalman
+	url = https://github.com/FrancoisCarouge/Kalman.git
+	branch = master
+	shallow = true
+[submodule "modules/TypedLinearAlgebra"]
+	path = modules/TypedLinearAlgebra
+	url = https://github.com/FrancoisCarouge/TypedLinearAlgebra.git
+	branch = master
+	shallow = true
+[submodule "modules/SparseLinearAlgebra"]
+	path = modules/SparseLinearAlgebra
+	url = https://github.com/FrancoisCarouge/SparseLinearAlgebra.git
+	branch = master
+	shallow = true
+[submodule "modules/mp-units"]
+	path = modules/mp-units
+	url = https://github.com/FrancoisCarouge/mp-units.git
+	branch = master
+	shallow = true

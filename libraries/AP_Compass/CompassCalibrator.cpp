@@ -68,6 +68,10 @@
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_GPS/AP_GPS.h>
 #include <GCS_MAVLink/GCS.h>
+
+#include "CompassCalibrator_fit.h"
+
+using namespace compass_calibrator_fit;
 #include <AP_InternalError/AP_InternalError.h>
 
 #define FIELD_RADIUS_MIN 150
@@ -692,50 +696,30 @@ void CompassCalibrator::run_sphere_fit()
     param_t fit1_params, fit2_params;
     fit1_params = fit2_params = _params;
 
-    float JTJ[COMPASS_CAL_NUM_SPHERE_PARAMS*COMPASS_CAL_NUM_SPHERE_PARAMS] = { };
-    float JTJ2[COMPASS_CAL_NUM_SPHERE_PARAMS*COMPASS_CAL_NUM_SPHERE_PARAMS] = { };
-    float JTFI[COMPASS_CAL_NUM_SPHERE_PARAMS] = { };
-
     // Gauss Newton Part common for all kind of extensions including LM
-    for (uint16_t k = 0; k<_samples_collected; k++) {
-        Vector3f sample = _sample_buffer[k].get();
-
-        float sphere_jacob[COMPASS_CAL_NUM_SPHERE_PARAMS];
-
-        calc_sphere_jacob(sample, fit1_params, sphere_jacob);
-
-        for (uint8_t i = 0;i < COMPASS_CAL_NUM_SPHERE_PARAMS; i++) {
-            // compute JTJ
-            for (uint8_t j = 0; j < COMPASS_CAL_NUM_SPHERE_PARAMS; j++) {
-                JTJ[i*COMPASS_CAL_NUM_SPHERE_PARAMS+j] += sphere_jacob[i] * sphere_jacob[j];
-                JTJ2[i*COMPASS_CAL_NUM_SPHERE_PARAMS+j] += sphere_jacob[i] * sphere_jacob[j];   //a backup JTJ for LM
-            }
-            // compute JTFI
-            JTFI[i] += sphere_jacob[i] * calc_residual(sample, fit1_params);
-        }
-    }
+    Normal<sphere> JTJ{};
+    Gradient<sphere> JTFI{};
+    accumulate_normal_equations<sphere>(JTJ, JTFI, _samples_collected,
+        [&](uint16_t k) {
+            float sphere_jacob[COMPASS_CAL_NUM_SPHERE_PARAMS];
+            calc_sphere_jacob(_sample_buffer[k].get(), fit1_params, sphere_jacob);
+            return typed_jacobian<sphere>(sphere_jacob);
+        },
+        [&](uint16_t k) { return calc_residual(_sample_buffer[k].get(), fit1_params); });
 
     //------------------------Levenberg-Marquardt-part-starts-here---------------------------------//
     // refer: http://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm#Choice_of_damping_parameter
-    for (uint8_t i = 0; i < COMPASS_CAL_NUM_SPHERE_PARAMS; i++) {
-        JTJ[i*COMPASS_CAL_NUM_SPHERE_PARAMS+i] += _sphere_lambda;
-        JTJ2[i*COMPASS_CAL_NUM_SPHERE_PARAMS+i] += _sphere_lambda/lma_damping;
-    }
-
-    if (!mat_inverse(JTJ, JTJ, 4)) {
-        return;
-    }
-
-    if (!mat_inverse(JTJ2, JTJ2, 4)) {
+    float step1[COMPASS_CAL_NUM_SPHERE_PARAMS], step2[COMPASS_CAL_NUM_SPHERE_PARAMS];
+    damped_step<sphere>(JTJ, JTFI, _sphere_lambda, step1);
+    damped_step<sphere>(JTJ, JTFI, _sphere_lambda/lma_damping, step2);
+    if (!all_finite(step1) || !all_finite(step2)) {
         return;
     }
 
     // extract radius, offset, diagonals and offdiagonal parameters
     for (uint8_t row=0; row < COMPASS_CAL_NUM_SPHERE_PARAMS; row++) {
-        for (uint8_t col=0; col < COMPASS_CAL_NUM_SPHERE_PARAMS; col++) {
-            fit1_params.get_sphere_params()[row] -= JTFI[col] * JTJ[row*COMPASS_CAL_NUM_SPHERE_PARAMS+col];
-            fit2_params.get_sphere_params()[row] -= JTFI[col] * JTJ2[row*COMPASS_CAL_NUM_SPHERE_PARAMS+col];
-        }
+        fit1_params.get_sphere_params()[row] -= step1[row];
+        fit2_params.get_sphere_params()[row] -= step2[row];
     }
 
     // calculate fitness of two possible sets of parameters
@@ -808,50 +792,30 @@ void CompassCalibrator::run_ellipsoid_fit()
     param_t fit1_params, fit2_params;
     fit1_params = fit2_params = _params;
 
-    float JTJ[COMPASS_CAL_NUM_ELLIPSOID_PARAMS*COMPASS_CAL_NUM_ELLIPSOID_PARAMS] = { };
-    float JTJ2[COMPASS_CAL_NUM_ELLIPSOID_PARAMS*COMPASS_CAL_NUM_ELLIPSOID_PARAMS] = { };
-    float JTFI[COMPASS_CAL_NUM_ELLIPSOID_PARAMS] = { };
-
     // Gauss Newton Part common for all kind of extensions including LM
-    for (uint16_t k = 0; k<_samples_collected; k++) {
-        Vector3f sample = _sample_buffer[k].get();
-
-        float ellipsoid_jacob[COMPASS_CAL_NUM_ELLIPSOID_PARAMS];
-
-        calc_ellipsoid_jacob(sample, fit1_params, ellipsoid_jacob);
-
-        for (uint8_t i = 0;i < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; i++) {
-            // compute JTJ
-            for (uint8_t j = 0; j < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; j++) {
-                JTJ [i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+j] += ellipsoid_jacob[i] * ellipsoid_jacob[j];
-                JTJ2[i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+j] += ellipsoid_jacob[i] * ellipsoid_jacob[j];
-            }
-            // compute JTFI
-            JTFI[i] += ellipsoid_jacob[i] * calc_residual(sample, fit1_params);
-        }
-    }
+    Normal<ellipsoid> JTJ{};
+    Gradient<ellipsoid> JTFI{};
+    accumulate_normal_equations<ellipsoid>(JTJ, JTFI, _samples_collected,
+        [&](uint16_t k) {
+            float ellipsoid_jacob[COMPASS_CAL_NUM_ELLIPSOID_PARAMS];
+            calc_ellipsoid_jacob(_sample_buffer[k].get(), fit1_params, ellipsoid_jacob);
+            return typed_jacobian<ellipsoid>(ellipsoid_jacob);
+        },
+        [&](uint16_t k) { return calc_residual(_sample_buffer[k].get(), fit1_params); });
 
     //------------------------Levenberg-Marquardt-part-starts-here---------------------------------//
     //refer: http://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm#Choice_of_damping_parameter
-    for (uint8_t i = 0; i < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; i++) {
-        JTJ[i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+i] += _ellipsoid_lambda;
-        JTJ2[i*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+i] += _ellipsoid_lambda/lma_damping;
-    }
-
-    if (!mat_inverse(JTJ, JTJ, 9)) {
-        return;
-    }
-
-    if (!mat_inverse(JTJ2, JTJ2, 9)) {
+    float step1[COMPASS_CAL_NUM_ELLIPSOID_PARAMS], step2[COMPASS_CAL_NUM_ELLIPSOID_PARAMS];
+    damped_step<ellipsoid>(JTJ, JTFI, _ellipsoid_lambda, step1);
+    damped_step<ellipsoid>(JTJ, JTFI, _ellipsoid_lambda/lma_damping, step2);
+    if (!all_finite(step1) || !all_finite(step2)) {
         return;
     }
 
     // extract radius, offset, diagonals and offdiagonal parameters
     for (uint8_t row=0; row < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; row++) {
-        for (uint8_t col=0; col < COMPASS_CAL_NUM_ELLIPSOID_PARAMS; col++) {
-            fit1_params.get_ellipsoid_params()[row] -= JTFI[col] * JTJ[row*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+col];
-            fit2_params.get_ellipsoid_params()[row] -= JTFI[col] * JTJ2[row*COMPASS_CAL_NUM_ELLIPSOID_PARAMS+col];
-        }
+        fit1_params.get_ellipsoid_params()[row] -= step1[row];
+        fit2_params.get_ellipsoid_params()[row] -= step2[row];
     }
 
     // calculate fitness of two possible sets of parameters

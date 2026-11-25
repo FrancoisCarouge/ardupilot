@@ -16,6 +16,14 @@
 #include <AP_Vehicle/AP_Vehicle_Type.h>
 #include <AP_InertialSensor/AP_InertialSensor.h>
 
+#include <new>
+#include <type_traits>
+
+#include "PosVelEKF.h"
+
+using mp_units::si::metre;
+using mp_units::si::second;
+
 extern const AP_HAL::HAL& hal;
 
 #if APM_BUILD_TYPE(APM_BUILD_Rover)
@@ -197,8 +205,15 @@ const AP_Param::GroupInfo AC_PrecLand::var_info[] = {
 };
 
 // Default constructor.
-AC_PrecLand::AC_PrecLand()
+AC_PrecLand::AC_PrecLand() :
+    _ekf_x(*new (_ekf_storage[0]) PosVelEKF{}),
+    _ekf_y(*new (_ekf_storage[1]) PosVelEKF{})
 {
+    // The storage holds the filters exactly, which are never destroyed.
+    static_assert(sizeof(_ekf_storage[0]) == sizeof(PosVelEKF));
+    static_assert(alignof(float) >= alignof(PosVelEKF));
+    static_assert(std::is_trivially_destructible_v<PosVelEKF>);
+
     if (_singleton != nullptr) {
         AP_HAL::panic("AC_PrecLand must be singleton");
     }
@@ -550,36 +565,36 @@ void AC_PrecLand::run_estimator(float rangefinder_alt_m, bool rangefinder_alt_va
                 const float& dt = _inertial_data_delayed->dt;
                 const Vector3f& vehicleDelVel = _inertial_data_delayed->correctedVehicleDeltaVelocityNED;
 
-                _ekf_x.predict(dt, -vehicleDelVel.x, _accel_noise*dt);
-                _ekf_y.predict(dt, -vehicleDelVel.y, _accel_noise*dt);
+                _ekf_x.predict(dt * second, -vehicleDelVel.x * (metre / second), _accel_noise*dt * (metre / second));
+                _ekf_y.predict(dt * second, -vehicleDelVel.y * (metre / second), _accel_noise*dt * (metre / second));
             }
 
             // Update if a new Line-Of-Sight measurement is available
             if (construct_pos_meas_using_rangefinder(rangefinder_alt_m, rangefinder_alt_valid)) {
-                float xy_pos_var = sq(_target_pos_rel_meas_ned_m.z*(0.01f + 0.01f*AP::ahrs().get_gyro().length()) + 0.02f);
+                const PosVelEKF::PositionVariance xy_pos_var = sq(_target_pos_rel_meas_ned_m.z*(0.01f + 0.01f*AP::ahrs().get_gyro().length()) + 0.02f) * (metre * metre);
                 if (!_estimator_initialized) {
                     // Inform the user landing target has been found
                     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Target Found");
                     // start init of EKF. We will let the filter consume the data for a while before it available for consumption
                     // reset filter state
                     if (_inertial_data_delayed->inertialNavVelocityValid) {
-                        _ekf_x.init(_target_pos_rel_meas_ned_m.x, xy_pos_var, -_inertial_data_delayed->inertialNavVelocity.x, sq(2.0f));
-                        _ekf_y.init(_target_pos_rel_meas_ned_m.y, xy_pos_var, -_inertial_data_delayed->inertialNavVelocity.y, sq(2.0f));
+                        _ekf_x.init(_target_pos_rel_meas_ned_m.x * metre, xy_pos_var, -_inertial_data_delayed->inertialNavVelocity.x * (metre / second), sq(2.0f) * (metre * metre / second / second));
+                        _ekf_y.init(_target_pos_rel_meas_ned_m.y * metre, xy_pos_var, -_inertial_data_delayed->inertialNavVelocity.y * (metre / second), sq(2.0f) * (metre * metre / second / second));
                     } else {
-                        _ekf_x.init(_target_pos_rel_meas_ned_m.x, xy_pos_var, 0.0f, sq(10.0f));
-                        _ekf_y.init(_target_pos_rel_meas_ned_m.y, xy_pos_var, 0.0f, sq(10.0f));
+                        _ekf_x.init(_target_pos_rel_meas_ned_m.x * metre, xy_pos_var, 0.0f * (metre / second), sq(10.0f) * (metre * metre / second / second));
+                        _ekf_y.init(_target_pos_rel_meas_ned_m.y * metre, xy_pos_var, 0.0f * (metre / second), sq(10.0f) * (metre * metre / second / second));
                     }
                     _last_update_ms = AP_HAL::millis();
                     _estimator_init_ms = AP_HAL::millis();
                     // we have initialized the estimator but will not use the values for sometime so that EKF settles down
                     _estimator_initialized = true;
                 } else {
-                    float NIS_x = _ekf_x.getPosNIS(_target_pos_rel_meas_ned_m.x, xy_pos_var);
-                    float NIS_y = _ekf_y.getPosNIS(_target_pos_rel_meas_ned_m.y, xy_pos_var);
+                    float NIS_x = _ekf_x.getPosNIS(_target_pos_rel_meas_ned_m.x * metre, xy_pos_var);
+                    float NIS_y = _ekf_y.getPosNIS(_target_pos_rel_meas_ned_m.y * metre, xy_pos_var);
                     if (MAX(NIS_x, NIS_y) < 3.0f || _outlier_reject_count >= 3) {
                         _outlier_reject_count = 0;
-                        _ekf_x.fusePos(_target_pos_rel_meas_ned_m.x, xy_pos_var);
-                        _ekf_y.fusePos(_target_pos_rel_meas_ned_m.y, xy_pos_var);
+                        _ekf_x.fusePos(_target_pos_rel_meas_ned_m.x * metre, xy_pos_var);
+                        _ekf_y.fusePos(_target_pos_rel_meas_ned_m.y * metre, xy_pos_var);
                         _last_update_ms = AP_HAL::millis();
                     } else {
                         _outlier_reject_count++;
@@ -592,10 +607,10 @@ void AC_PrecLand::run_estimator(float rangefinder_alt_m, bool rangefinder_alt_va
 
             // Output prediction
             if (target_acquired()) {
-                _target_pos_rel_est_ne_m.x = _ekf_x.getPos();
-                _target_pos_rel_est_ne_m.y = _ekf_y.getPos();
-                _target_vel_rel_est_ne_ms.x = _ekf_x.getVel();
-                _target_vel_rel_est_ne_ms.y = _ekf_y.getVel();
+                _target_pos_rel_est_ne_m.x = _ekf_x.getPos().numerical_value_in(metre);
+                _target_pos_rel_est_ne_m.y = _ekf_y.getPos().numerical_value_in(metre);
+                _target_vel_rel_est_ne_ms.x = _ekf_x.getVel().numerical_value_in(metre / second);
+                _target_vel_rel_est_ne_ms.y = _ekf_y.getVel().numerical_value_in(metre / second);
 
                 run_output_prediction();
             }
